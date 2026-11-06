@@ -1,0 +1,20 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Dependencies and generated files
+node_modules/
+dist/
+dist-ssr/
+coverage/
+logs/
+*.log
+*.tsbuildinfo
+
+# Local editor and operating system files
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
