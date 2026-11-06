@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { ZodError } from 'zod'
+import multer from 'multer'
 import { createLogger } from '../config/logger'
 
 const logger = createLogger('ErrorHandler')
@@ -16,6 +17,12 @@ export class AppError extends Error {
 }
 
 export const errorHandler = (err: Error, req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ status: 'error', message: '文件超过 4 MiB，请压缩或拆分后重试。' })
+  }
+  if ('type' in err && err.type === 'entity.too.large') {
+    return res.status(413).json({ status: 'error', message: '请求内容超过 5 MiB，请减少图片、附件或历史消息后重试。' })
+  }
   // Zod validation errors
   if (err instanceof ZodError) {
     logger.warn(

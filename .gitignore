@@ -6,6 +6,7 @@
 
 # Dependencies and generated files
 node_modules/
+.dependency-backup/
 dist/
 dist-ssr/
 coverage/

@@ -1,0 +1,12 @@
+{
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": "frontend/dist",
+  "nodeVersion": "22.17.1",
+  "cloudFunctions": {
+    "nodejs": {
+      "maxDuration": 120
+    }
+  },
+  "rewrites": [{ "source": "/*", "destination": "/index.html" }]
+}

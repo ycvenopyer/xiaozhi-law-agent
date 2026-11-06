@@ -272,6 +272,7 @@ export async function extractDossier(
 
   let lastErr: unknown;
   for (const provider of chain) {
+    signal?.throwIfAborted();
     try {
       return await completeJson(messages, provider, signal);
     } catch (err) {

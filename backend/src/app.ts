@@ -16,7 +16,9 @@ import { agentRouter } from './modules/agent'
 // Example: Product Module
 // import { productRouter } from './modules/product.js'
 
-export const createApp = (): Application => {
+export const createApp = (
+  { serveFrontend = true }: { serveFrontend?: boolean } = {}
+): Application => {
   const app = express()
 
   // HTTP request logging
@@ -31,8 +33,8 @@ export const createApp = (): Application => {
 
   // Body parsing and compression. The cap protects the server from
   // accidentally-large payloads during demos (image pastes can balloon fast).
-  app.use(express.json({ limit: '20mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+  app.use(express.json({ limit: '5mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '5mb' }));
   // Skip compression for the agent SSE stream so tokens arrive in real time.
   app.use(
     compression({
@@ -52,14 +54,16 @@ export const createApp = (): Application => {
   // app.use(`${env.API_PREFIX}/products`, productRouter)
 
   // Serve the built frontend in production (single-port deployment).
-  const __filename = fileURLToPath(import.meta.url)
-  const __dirname = path.dirname(__filename)
-  const webDist = path.resolve(env.WEB_DIST || path.join(__dirname, '..', '..', 'frontend', 'dist'))
-  if (fs.existsSync(webDist)) {
-    app.use(express.static(webDist))
-    app.get(/^(?!\/api).*/, (_req, res) => {
-      res.sendFile(path.join(webDist, 'index.html'))
-    })
+  if (serveFrontend) {
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    const webDist = path.resolve(process.env.WEB_DIST || path.join(__dirname, '..', '..', 'frontend', 'dist'))
+    if (fs.existsSync(webDist)) {
+      app.use(express.static(webDist))
+      app.get(/^(?!\/api).*/, (_req, res) => {
+        res.sendFile(path.join(webDist, 'index.html'))
+      })
+    }
   }
 
   // Error handling

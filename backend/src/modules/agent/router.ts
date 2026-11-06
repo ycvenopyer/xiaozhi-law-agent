@@ -72,7 +72,11 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  const send = (obj: unknown) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  const send = (obj: unknown) => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    }
+  };
 
   // Heartbeat: corporate proxies (and Cloud Studio's gateway) silently drop
   // idle SSE streams after 30-60s. A trivial periodic comment line keeps the
@@ -82,9 +86,20 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   }, 15_000);
 
   const ac = new AbortController();
+  // End before Pages' 120-second hard limit so the browser receives an error.
+  const deadline = setTimeout(() => {
+    ac.abort();
+    send({ type: 'error', message: '本次请求超过 110 秒，请缩短问题或减少材料后重试。' });
+    clearInterval(heartbeat);
+    res.end();
+  }, 110_000);
   // Use res (not req) close: req 'close' fires once express.json() finishes
   // reading the body, which would abort generation before it starts.
-  res.on('close', () => ac.abort());
+  res.on('close', () => {
+    ac.abort();
+    clearTimeout(deadline);
+    clearInterval(heartbeat);
+  });
 
   try {
     await runAgent(
@@ -98,8 +113,9 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   } catch (err) {
     send({ type: 'error', message: (err as Error).message || '生成失败' });
   } finally {
+    clearTimeout(deadline);
     clearInterval(heartbeat);
-    res.end();
+    if (!res.writableEnded) res.end();
   }
 });
 
@@ -138,10 +154,25 @@ agentRouter.post('/extract-dossier', async (req: Request, res: Response) => {
   if (!text && !images?.length) {
     return res.status(400).json({ message: '请上传卷宗文本或图片' });
   }
+  const ac = new AbortController();
+  const deadline = setTimeout(() => {
+    ac.abort();
+    if (!res.writableEnded && !res.destroyed) {
+      res.status(504).json({ message: '卷宗识别超过 110 秒，请减少材料后重试。' });
+    }
+  }, 110_000);
+  res.on('close', () => {
+    ac.abort();
+    clearTimeout(deadline);
+  });
   try {
-    const result = await extractDossier({ text, images });
-    res.json(result);
+    const result = await extractDossier({ text, images }, ac.signal);
+    if (!res.writableEnded && !res.destroyed) res.json(result);
   } catch (err) {
-    res.status(500).json({ message: friendlyError(String((err as Error)?.message || err)) });
+    if (!res.writableEnded && !res.destroyed) {
+      res.status(500).json({ message: friendlyError(String((err as Error)?.message || err)) });
+    }
+  } finally {
+    clearTimeout(deadline);
   }
 });

@@ -1,5 +1,16 @@
 import type { AgentEvent, AttachedFile, ChatMessage } from '@/types/agent';
 
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_JSON_BYTES = 5 * 1024 * 1024;
+
+function serializeRequest(payload: unknown): string {
+  const body = JSON.stringify(payload);
+  if (new Blob([body]).size > MAX_JSON_BYTES) {
+    throw new Error('请求内容超过 5 MiB，请减少图片、附件或历史消息后重试。');
+  }
+  return body;
+}
+
 /**
  * Stream a chat completion from the backend. The backend returns Server-Sent
  * Events; we parse them incrementally and yield typed AgentEvents.
@@ -40,7 +51,7 @@ export async function* streamChat(
   const res = await fetch('/api/agent/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body: serializeRequest({
       messages: payload,
       model: opts?.model,
       knowledge: opts?.knowledge,
@@ -90,6 +101,9 @@ export async function* streamChat(
  * to the next prompt. Returns the parsed file metadata.
  */
 export async function uploadFile(file: File): Promise<AttachedFile> {
+  if (file.size > MAX_FILE_BYTES) {
+    throw new Error('文件超过 4 MiB，请压缩或拆分后重试。');
+  }
   const form = new FormData();
   form.append('file', file);
   const res = await fetch('/api/agent/files', { method: 'POST', body: form });
@@ -126,7 +140,7 @@ export async function extractDossier(payload: {
   const res = await fetch('/api/agent/extract-dossier', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: serializeRequest(payload),
   });
   if (!res.ok) {
     let msg = '卷宗识别失败';

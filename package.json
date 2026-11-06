@@ -1,0 +1,10 @@
+{
+  "name": "xiaozhi-law-agent",
+  "private": true,
+  "type": "module",
+  "workspaces": ["frontend", "backend"],
+  "scripts": {
+    "build": "npm run build --workspace frontend",
+    "test:edgeone": "tsx --test scripts/edgeone.test.ts"
+  }
+}

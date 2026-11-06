@@ -5,7 +5,7 @@ import mammoth from 'mammoth';
 /** In-memory upload (no disk persistence needed — file text is sent to the LLM). */
 export const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 12 * 1024 * 1024 }, // 12 MB
+  limits: { fileSize: 4 * 1024 * 1024 }, // Leave room for multipart metadata under Pages' 6 MB cap.
 });
 
 const TEXT_EXT = new Set([
