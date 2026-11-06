@@ -1,208 +1,272 @@
-# 小知（XiaoZhi）— 知识产权律师 AI 办案助理
+﻿# XiaoZhi — AI Assistant for Intellectual Property Lawyers
 
-「小知」取自"知产"，是一位面向知识产权律师的私人 AI 办案助理。它能像承办律师一样贴着案情作答：结合你上传的卷宗分析证据、草拟辩论意见与法律文书、检索法条与典型案例、查询商标注册状态、计算赔偿数额。
+[English](./README.md) | [简体中文](./README-zh.md)
 
----
+XiaoZhi (小知) is a case-aware AI assistant for intellectual property work, including trademarks, patents, copyright, trade secrets, and unfair competition. It combines uploaded case materials, a user-maintained knowledge base, streaming conversations, and tools for research and calculations.
 
-## 一、这是什么 Agent
+## Contents
 
-小知是一个**领域垂直的法律 AI Agent**，聚焦知识产权业务（商标、专利、著作权、商业秘密、不正当竞争）。与通用聊天机器人相比，它的特点是：
+- [Features](#features)
+- [Architecture](#architecture)
+- [Local deployment](#local-deployment)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [API](#api)
+- [Project structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
 
-- **案情卷宗驱动**：上传判决书、起诉状或案件叙述后，自动提取「当事人 / 案由 / 核心事实 / 诉讼请求 / 证据清单」五项结构化信息，后续所有回答都结合这份卷宗；
-- **律师口吻与规范表达**：引用法条必须写明制定机关与文号，引用案例必须写明法院、案号与裁判要旨，无法确认的内容明确标注"需进一步核实"，严禁编造；
-- **卷宗库**：识别过的卷宗自动归档，随时翻阅、搜索，一键挂载到当前对话；
-- **工具增强**：联网搜索、商标检索、计算器、日期时间四个内置工具，模型按需调用。
+## Features
 
-### 功能清单
+- **Case dossiers:** extract parties, cause of action, facts, claims, and evidence from case materials; save and attach dossiers to conversations.
+- **Streaming chat:** SSE responses, model selection, and fallback between configured providers.
+- **Document analysis:** extract text from PDF, DOCX, and text files; send images to a vision-capable model.
+- **Knowledge base:** maintain statutes and cases and include them in the assistant's context.
+- **Legal workbench:** dedicated entry points for contract drafting/review and statute/case research.
+- **Built-in tools:** arithmetic, date/time, web search, and trademark research through public web sources.
+- **Browser persistence:** store conversations, dossiers, knowledge entries, and appearance settings locally.
 
-| 功能 | 说明 |
-| --- | --- |
-| AI 对话 | 流式输出（SSE），9 个免费模型可切换，单模型故障自动降级到下一个 |
-| 卷宗智能识别 | 上传 PDF / Word / 图片 / 粘贴文本 → LLM 提取五要素 + 本地章节标题兜底解析 |
-| 卷宗库 | 自动归档、搜索、重命名、删除、一键"用于当前对话" |
-| 知识库 | 用户自建核心法条与典型案例库，作答时优先引用 |
-| 联网检索 | 调用搜索 API 查法条、案例、最新资讯，附来源链接 |
-| 商标查询 | 按关键词检索商标注册状态、近似商标、申请人等 |
-| 合同起草/审核 | 知识产权合同起草与风险审核专用面板 |
-| 法条/案例检索面板 | 结构化输入（关键词/法条编号/案由）直接检索 |
-| 图片识别 | 商标图样、判决书截图、侵权实物照片等多模态识别 |
-| 外观定制 | 头像、名称、明暗主题（默认锁定浅色，可手动跟随系统） |
+## Architecture
 
----
+The frontend uses React 19, TypeScript, Vite 7, and Tailwind CSS 4. The backend uses Express 4 and TypeScript. A custom OpenAI-compatible function-calling loop lives in `backend/src/modules/agent/`; it does not use LangChain or LlamaIndex.
 
-## 二、Agent 框架
-
-**没有使用 LangChain / LlamaIndex 等现成框架**，而是基于 **OpenAI Function Calling（Tool Use）协议** 自研了一个轻量 Agent 循环，核心在 `backend/src/modules/agent/`：
-
-```
-用户消息 ──► 组装 System Prompt + 卷宗 + 知识库 ──► LLM（流式）
-                     ▲                                │
-                     │                        tool_calls？
-                     │                                ▼
-                     └──── 工具结果回填 ◄──── executeTool()（calculator / datetime /
-                                              web_search / trademark_search）
+```text
+Browser UI → Express API → system prompt + dossier + knowledge + conversation
+                                ↓
+                         model provider
+                                ↓ tool calls
+                         execute built-in tools
+                                ↓
+                         feed results back → SSE response
 ```
 
-- **ReAct 式工具循环**：模型决定何时调用哪个工具，后端执行后把结果回填进上下文继续生成，工具调用总次数由 System Prompt 约束（原则上 ≤4 次），避免过度检索；
-- **多模型容错链（Provider Chain）**：`providers.ts` 中注册 9 个模型，请求失败按链自动切换下一个，免费额度抖动时用户无感；
-- **流式与心跳**：SSE 推送 token，每 15 秒发 `: ping` 注释行防止代理断连；首字节 60s / 空闲 30s 超时自动熔断重试。
+No database, Redis, vector store, CloudBase account, or GPU is required for the core local app. Knowledge and dossier text are injected into the prompt; this is not a vector-search RAG pipeline. MCP servers and dynamically loaded Skills are not currently supported.
 
----
+**Local deployment runs the web app and agent backend on your computer. Model inference still uses external APIs.** Submitted material is sent to the selected model provider, and research queries go to the configured search service. Browser data is tied to its origin/profile and can be lost when site data is cleared; changing ports also changes the storage origin.
 
-## 三、前端技术
+## Local deployment
 
-- **React 19 + TypeScript**（`frontend/src/`）
-- **Vite 7** 构建与开发服务器（`/api` 代理到后端 `:3000`）
-- **Tailwind CSS 4 + shadcn/ui 风格组件**，主题用 CSS 变量（oklch）+ `.dark` 类切换
-- 本地持久化用 **localStorage**（会话 `agent_sessions_v1`、知识库、卷宗库 `agent_dossiers_v1`、外观设置）
-- 自研组件：`MessageList / ChatInput / CaseDossier / KnowledgePanel / Workbench / ContractPanel / Sidebar / AppearancePanel` 等
+### 1. Prerequisites
 
----
+- Node.js **22.17.1 or newer in the 22.x series** (the repository's EdgeOne configuration pins 22.17.1).
+- npm 10+ and Git.
+- Network access and a valid API key for at least one provider registered in `backend/src/modules/agent/providers.ts`: Zhipu BigModel, SiliconFlow, or OpenRouter.
 
-## 四、后端技术
+You do not need to install pnpm. The repository uses npm workspaces and a root `package-lock.json`.
 
-- **Node.js + Express 4 + TypeScript**（ESM，`tsx` 直接跑 TS）
-- **Multer** 处理文件上传（20MB 上限）、**pino** 结构化日志、**zod** 校验环境变量与请求体、**compression**（SSE 路由除外）
-- 关键接口：
+### 2. Clone and install
 
-| 接口 | 用途 |
+Run from PowerShell, macOS Terminal, or a Linux shell:
+
+```sh
+git clone https://github.com/ycvenopyer/xiaozhi-law-agent.git
+cd xiaozhi-law-agent
+node --version
+npm --version
+npm ci
+```
+
+Run `npm ci` in the repository root; it installs both workspaces, including the `tsx` runtime. Keep development dependencies installed for the source-based deployment below.
+
+### 3. Configure the backend
+
+Copy the template **only if `backend/.env` does not already exist**.
+
+Windows PowerShell:
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+notepad backend/.env
+```
+
+macOS / Linux:
+
+```sh
+cp backend/.env.example backend/.env
+nano backend/.env
+```
+
+For example, add your Zhipu key to `backend/.env` and keep the default API prefix and port:
+
+```dotenv
+NODE_ENV=development
+PORT=3000
+API_PREFIX=/api
+CORS_ORIGIN=*
+ZHIPU_API_KEY=replace_with_your_actual_key
+```
+
+Alternatively, add `SILICONFLOW_API_KEY` or `OPENROUTER_API_KEY`. Provider keys are not included in the current template; add the needed lines yourself. Restart the backend after editing `.env`.
+
+**Setting only `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` does not enable chat in the current implementation.** Chat resolves providers from the registry and requires one of the three provider-specific keys above. The legacy `/api/agent/config` response does not represent registry availability; use `/api/agent/models` instead. Model access, billing, quotas, and availability depend on your provider account; registry `free` labels are not a pricing guarantee.
+
+Keep credentials in `backend/.env`, which is ignored by Git. Do not put model/search secrets in frontend environment variables.
+
+### 4. Recommended: build and run on one local port
+
+Build the frontend from the repository root:
+
+```sh
+npm run build
+```
+
+Then start the backend from the repository root.
+
+Windows PowerShell:
+
+```powershell
+$env:NODE_ENV="production"
+$env:PORT="8080"
+npm exec --workspace backend -- tsx src/index.ts
+```
+
+macOS / Linux:
+
+```sh
+NODE_ENV=production PORT=8080 npm exec --workspace backend -- tsx src/index.ts
+```
+
+Open **http://localhost:8080**. Express serves `frontend/dist` and `/api` from the same port. Keep the terminal running; press `Ctrl+C` to stop. Re-run `npm run build` after changing the frontend.
+
+This command deliberately runs TypeScript through the installed `tsx` runtime. The current backend TypeScript configuration targets CommonJS while the package uses ESM and source files use `import.meta`; `npm run build --workspace backend` followed by `npm start --workspace backend` is not a working deployment path without fixing that configuration.
+
+### 5. Alternative: development with two terminals
+
+From the repository root in terminal A:
+
+```sh
+npm run dev --workspace backend
+```
+
+From the repository root in terminal B:
+
+```sh
+npm run dev --workspace frontend
+```
+
+Open **http://localhost:5173**. Vite proxies `/api` to `http://localhost:3000`. Use fresh terminals after the production example so `PORT=8080` and `NODE_ENV=production` are not inherited.
+
+The Vite HMR configuration currently targets a hosted development environment. If local hot reload reports a WebSocket error, remove the `server.hmr` block from `frontend/vite.config.ts` to use Vite's local defaults and restart Vite, or use the single-port deployment above.
+
+### 6. Verify the service
+
+In a second terminal (replace `8080` with `3000` for the development backend):
+
+Windows PowerShell:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/api/health
+Invoke-RestMethod http://localhost:8080/api/agent/models
+```
+
+macOS / Linux:
+
+```sh
+curl http://localhost:8080/api/health
+curl http://localhost:8080/api/agent/models
+```
+
+The health response should contain `"status":"ok"`. At least one model should report `"available":true`; this means a key was loaded, not that the remote provider accepted it. In the UI, select an available model and send a short message to verify actual inference. If needed, select a different available model.
+
+## Configuration
+
+All backend settings go in `backend/.env`; shell environment variables take precedence. Commands above use the backend workspace as the working directory so `dotenv` finds that file.
+
+| Variable | Purpose / default |
 | --- | --- |
-| `POST /api/agent/chat` | SSE 流式对话（带工具循环） |
-| `POST /api/agent/extract-dossier` | 卷宗结构化提取（文本/图片） |
-| `POST /api/agent/files` | 文件解析，返回纯文本 |
-| `GET /api/agent/models` | 模型清单与可用性 |
+| `ZHIPU_API_KEY` | Enables registered Zhipu text/vision models. |
+| `SILICONFLOW_API_KEY` | Enables registered SiliconFlow models. |
+| `OPENROUTER_API_KEY` | Enables registered OpenRouter models. |
+| `WEB_SEARCH_PROVIDER` | Optional: `tavily` or `serpapi`. |
+| `WEB_SEARCH_API_KEY` | Key for the selected search service. |
+| `NODE_ENV` | `development`, `production`, or `test`; default `development`. |
+| `PORT` | Backend port; default `3000`. |
+| `API_PREFIX` | Default `/api`; keep it because the frontend uses `/api`. |
+| `CORS_ORIGIN` | Default `*`; supports one explicit origin URL. |
+| `LOG_LEVEL` | Default `info`. |
+| `LLM_TEMPERATURE` | Default `0.7`. |
+| `LLM_MAX_TOKENS` | Default `2000`. |
+| `WEB_DIST` | Optional path to built frontend assets; defaults to `frontend/dist`. |
 
-- 生产模式下单端口部署：Express 同时静态托管 `frontend/dist`。
+For web research and trademark search, add:
 
----
+```dotenv
+WEB_SEARCH_PROVIDER=tavily
+WEB_SEARCH_API_KEY=replace_with_your_search_key
+```
 
-## 五、数据库构造
+General web search also supports SerpAPI. **The trademark tool specifically requires Tavily** and searches public web pages; it is not a direct official trademark-registry integration. Without a search key, local chat can still run, but live research is unavailable. Image analysis requires access to a registered vision-capable model. To add a different OpenAI-compatible endpoint or a self-hosted model, update `providers.ts`; generic `LLM_*` settings alone do not register it.
 
-**本项目不依赖任何数据库服务。** 所有用户数据（对话会话、知识库、卷宗库、外观设置）以 JSON 形式存储在**浏览器 localStorage** 中，键值如下：
+## Usage
 
-| localStorage 键 | 内容 |
-| --- | --- |
-| `agent_sessions_v1` | 全部会话（含消息、卷宗引用） |
-| `agent_dossiers_v1` | 卷宗库（结构化五要素 + 原始材料） |
-| 知识库键 | 用户自建法条/案例条目 |
-| `agent-appearance` | 外观设置 |
+1. Start a conversation and select a configured model.
+2. Upload materials or paste case text into the dossier panel, extract the five fields, review them, and attach the dossier to the current conversation.
+3. Add relevant statutes/cases to the knowledge panel to supply reference context.
+4. Ask for case analysis, a draft, or a calculation; use the workbench for focused tasks.
 
-这样设计的取舍：**0 成本、零运维、随开随用**；代价是数据绑定在单台设备的浏览器里，清除浏览器数据会丢失（可在浏览器设置中导出，或自行扩展接入云端存储）。后端本身**无状态**，方便任意部署。
+Uploads are limited to **4 MiB per file** and JSON request bodies to **5 MiB**. Extracted file text is capped at **40,000 characters**. PDF extraction reads embedded text; scanned PDFs need OCR outside this pipeline or images submitted to a vision-capable model. Use `.docx` for Word documents; legacy `.doc` is not supported.
 
----
+Legal drafts, citations, and search results require professional review before use. The current backend has no application-level authentication; add access control before exposing a deployment to other users.
 
-## 六、数据处理流程
+## API
 
-### 1. 文件解析（`files.ts`）
+Default base path: `/api`.
 
-- `.txt / .md` → 按 UTF-8 直接读取
-- `.pdf` → `pdf-parse` 提取文本
-- `.docx` → `mammoth` 提取纯文本
-- 图片 → 转 base64 data URL，走视觉模型识别
-
-### 2. 卷宗信息提取（`llm.ts`）
-
-双层机制保证五要素尽可能填满：
-
-1. **LLM 提取**：`EXTRACT_PROMPT` 要求模型主动从叙述体中归纳（禁止因无小标题留空），案由映射到固定枚举，温度 0.2、非流式、强制 JSON 输出（带 ``` 围栏剥离与 `{...}` 截取容错）；
-2. **本地启发式兜底**（`heuristicExtract`）：按中文法律文书的章节标题正则（当事人/原被告、案由、本院查明、诉讼请求、判令、证据清单等）切分原文，补齐 LLM 留空的字段。
-
-### 3. 知识注入与检索
-
-- **知识库**：用户手动维护的条目全文拼入 System Prompt（小规模场景下不向量化，避免引入向量库成本）；
-- **卷宗**：结构化五要素序列化为文本块（`dossierToText`）随每次请求注入；
-- **联网检索**：通过 Tavily / SerpAPI 等 REST 搜索接口实时检索，结果由模型消化后引用并标注来源；本项目未做传统意义的文档切分（chunking）与向量检索（RAG），是面向课堂演示的轻量取舍。
-
-### 4. 上下文管理
-
-- 会话历史按消息完整传递，超长自动截断；
-- 流式输出中断时自动续写（`continueBrokenStream`），max_tokens 由环境变量控制。
-
----
-
-## 七、模型选择与接入方式
-
-### 模型清单（9 个，全部免费额度）
-
-| 提供商 | 模型 | 说明 |
+| Method | Route | Purpose |
 | --- | --- | --- |
-| 智谱 BigModel | GLM-4.7 / 4.7-FlashX / 4.6V-Flash（视觉）/ 4.5-Air | 国内直连，Flash 系列免费无日限 |
-| 硅基流动 SiliconFlow | Qwen3-8B、DeepSeek-R1-Distill-7B、GLM-4-9B | OpenAI 兼容接口 |
-| OpenRouter | Qwen 27B (free)、Ling 3.0 Flash VL（视觉） | 免费额度模型 |
+| GET | `/api/health` | Process health check. |
+| GET | `/api/agent/models` | Registered models and key availability; no secrets returned. |
+| POST | `/api/agent/chat` | SSE chat with tool calls. |
+| POST | `/api/agent/extract-dossier` | Extract structured dossier information. |
+| POST | `/api/agent/files` | Parse uploaded files. |
 
-### 接入方式
+## Project structure
 
-统一走 **OpenAI 兼容 Chat Completions 协议**（`/v1/chat/completions`），无需各家 SDK：
-
-1. 在 `backend/.env` 配置各家 API Key：
-
-```bash
-ZHIPU_API_KEY=xxx          # 智谱 open.bigmodel.cn
-SILICONFLOW_API_KEY=xxx    # 硅基流动 cloud.siliconflow.cn
-OPENROUTER_API_KEY=xxx     # openrouter.ai
-WEB_SEARCH_PROVIDER=tavily # 可选，联网搜索
-WEB_SEARCH_API_KEY=xxx
-```
-
-2. `providers.ts` 中每个模型是一个 `{ label, baseUrl, model, apiKey }` 记录；
-3. 前端模型选择器从 `GET /api/agent/models` 拉取清单，切换模型只影响下一次请求；
-4. 提取类调用（卷宗识别）自动沿容错链降级，视觉类请求自动只路由到视觉模型。
-
----
-
-## 八、MCP 与 Skills 支持情况
-
-- **MCP（Model Context Protocol）：暂不支持。** 当前工具是硬编码在后端 `tools.ts` 中的四个内置工具（calculator / get_datetime / web_search / trademark_search），以 OpenAI Function Calling 形式暴露。若需接入 MCP，可在 `executeTool` 处增加 MCP Client 转发层，把 MCP server 的 tools 映射为同一协议。
-- **Skills：暂不支持。** 无插件/技能加载机制，扩展新工具需在 `TOOLS` 数组中登记定义并在 `executeTool` 中实现执行逻辑（两处改动即可）。
-
----
-
-## 九、本地运行
-
-```bash
-# 1. 安装依赖（推荐 pnpm）
-pnpm install
-
-# 2. 配置后端环境变量
-cp backend/.env.example backend/.env   # 填入至少一个 LLM API Key
-
-# 3. 开发模式（前端 :5173 代理 /api 到 :3000）
-pnpm --dir backend dev
-pnpm --dir frontend dev
-
-# 4. 生产构建（单端口 :8080，Express 托管前端）
-pnpm --dir frontend build
-NODE_ENV=production PORT=8080 pnpm --dir backend start
-```
-
----
-
-## 十、目录结构
-
-```
+```text
 .
-├── backend/
-│   └── src/
-│       ├── app.ts              # Express 应用装配
-│       ├── config/env.ts       # zod 环境变量校验
-│       ├── middleware/         # 日志、错误处理
-│       └── modules/
-│           ├── agent/
-│           │   ├── llm.ts      # Agent 循环、SSE、卷宗提取
-│           │   ├── providers.ts# 9 模型注册与容错链
-│           │   ├── tools.ts    # 四个内置工具
-│           │   ├── files.ts    # PDF/Word/图片解析
-│           │   └── router.ts   # HTTP 路由
-│           └── system.ts       # 健康检查
-├── frontend/
-│   └── src/
-│       ├── pages/Index.tsx     # 主页面（会话/卷宗/知识库状态中枢）
-│       ├── components/assistant/  # 聊天、卷宗、知识库等组件
-│       ├── lib/                # 会话/卷宗/知识库持久化、API 客户端
-│       └── types/agent.ts      # 共享类型
-└── README.md
+├── backend/src/
+│   ├── config/               # Environment validation and logging
+│   ├── modules/agent/        # Agent loop, providers, tools, files, API routes
+│   ├── app.ts                # Express and frontend static hosting
+│   └── index.ts              # Local server entry point
+├── frontend/src/             # React UI and browser persistence
+├── cloud-functions/          # EdgeOne API entry point
+├── scripts/edgeone.test.ts   # EdgeOne integration checks
+├── docs/                     # Product and development material
+├── edgeone.json              # EdgeOne build/deployment configuration
+├── package.json              # npm workspaces and root commands
+├── README.md
+└── README-zh.md
 ```
+
+## Troubleshooting
+
+| Symptom | Check / solution |
+| --- | --- |
+| Every model is unavailable | Add a provider-specific key to `backend/.env`, then restart the backend. |
+| 401 / 403 / 429 from a provider | Check credentials, model access, balance, and quotas; try another configured model. |
+| UI loads but `/api` fails | Start the backend; development proxy expects port `3000`. Keep `API_PREFIX=/api`. |
+| Port already in use | Stop the conflicting process. Vite uses strict port `5173`; single-port deployment can use another `PORT`. |
+| Root page returns 404 | Run `npm run build` before starting the single-port service; check `frontend/dist`. |
+| `import.meta` / ESM / CommonJS build error | Use the documented `tsx` source command for the backend. |
+| Local hot reload fails | See the `server.hmr` workaround in the development section. |
+| Search or trademark lookup unavailable | Configure search keys; trademark lookup needs Tavily specifically. |
+| Large upload or scanned PDF produces no useful text | Reduce file size; OCR scanned PDFs first or use image input. |
+
+## Contributing
+
+Open an issue describing the problem or proposed change, then submit a focused pull request with reproduction steps and validation results. Do not include credentials or private case materials.
+
+Useful commands from the repository root:
+
+```sh
+npm run build
+npm run test:edgeone
+```
+
+The root build checks and bundles the frontend; it does not compile the backend. The EdgeOne test suite covers the cloud entry point and shared integration behavior. Local deployment uses Express directly and does not require an EdgeOne account.
 
 ## License
 
-Apache License 2.0 — 详见 [LICENSE](./LICENSE)。
+[Apache License 2.0](./LICENSE).
