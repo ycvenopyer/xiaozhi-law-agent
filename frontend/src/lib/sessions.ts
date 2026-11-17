@@ -1,24 +1,12 @@
 import type { Session } from '@/types/agent';
-
-const KEY = 'agent_sessions_v1';
+import { loadCollection, saveInBackground } from './cloud-store';
 
 export function loadSessions(): Session[] {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as Session[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return loadCollection<Session>('sessions').sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function saveSessions(sessions: Session[]): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(sessions));
-  } catch {
-    /* storage full / unavailable — ignore */
-  }
+  saveInBackground('sessions', sessions);
 }
 
 export function newSessionId(): string {

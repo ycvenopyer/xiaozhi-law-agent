@@ -1,3 +1,4 @@
+import { loadCollection, saveInBackground } from './cloud-store';
 export type KBCategory = '商标法' | '专利法' | '著作权法' | '反不正当竞争法' | '其他';
 export type KBKind = 'law' | 'case';
 
@@ -649,58 +650,24 @@ const LAW_FULL_SEED: KBEntry[] = [
 
 const SEED_ALL = [...SEED, ...EXTRA_SEED, ...GUIDE_SEED, ...LAW_FULL_SEED];
 
-const KB_KEY = 'agent-knowledge';
-
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v));
 }
 
-/** Load the knowledge base (seeded on first run), persisted in localStorage. */
+/** Public seeds ship with the app. Private additions and changes live in PG. */
 export function loadKB(): KBEntry[] {
-  try {
-    const raw = localStorage.getItem(KB_KEY);
-    if (raw) {
-      const list = JSON.parse(raw) as KBEntry[];
-      // Merge in any newly shipped seed entries the user doesn't have yet
-      // (so existing users pick up added laws/cases on next load).
-      const have = new Set(list.map((e) => e.id));
-      for (const s of SEED_ALL) {
-        if (!have.has(s.id)) list.push(clone(s));
-      }
-      // Backfill fields absent in older saved entries.
-      const seedKind = new Map(SEED_ALL.map((s) => [s.id, s.kind] as const));
-      for (const e of list) {
-        // migrate legacy `type` ('法条' | '案例') field from older versions
-        const legacy = (e as unknown as { type?: string }).type;
-        if (e.kind === undefined) {
-          e.kind = legacy === '案例' ? 'case' : 'law';
-        }
-        // builtin entries always follow the shipped classification
-        // (fixes entries saved before the law/case field existed)
-        const sk = seedKind.get(e.id);
-        if (sk !== undefined) e.kind = sk;
-        if (e.enabled === undefined) e.enabled = true;
-      }
-      return list;
-    }
-  } catch {
-    /* ignore */
-  }
-  const seed = clone(SEED_ALL);
-  try {
-    localStorage.setItem(KB_KEY, JSON.stringify(seed));
-  } catch {
-    /* ignore */
-  }
-  return seed;
+  const saved = loadCollection<KBEntry & { deleted?: boolean }>('knowledge');
+  const byId = new Map(clone(SEED_ALL).map(entry => [entry.id, entry]));
+  saved.forEach(entry => { if (entry.deleted) byId.delete(entry.id); else byId.set(entry.id, entry); });
+  return [...byId.values()];
 }
 
 export function saveKB(list: KBEntry[]): void {
-  try {
-    localStorage.setItem(KB_KEY, JSON.stringify(list));
-  } catch {
-    /* ignore */
-  }
+  const ids = new Set(list.map(entry => entry.id));
+  const seeds = new Map(SEED_ALL.map(entry => [entry.id, entry]));
+  const changed = list.filter(entry => !seeds.has(entry.id) || JSON.stringify(entry) !== JSON.stringify(seeds.get(entry.id)));
+  const tombstones = SEED_ALL.filter(entry => !ids.has(entry.id)).map(entry => ({ ...entry, deleted: true }));
+  saveInBackground('knowledge', [...changed, ...tombstones]);
 }
 
 /** Serialize the ENABLED knowledge entries into the block the backend injects. */

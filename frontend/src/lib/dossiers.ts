@@ -1,6 +1,5 @@
 import { type CaseDossier, IMAGE_DOSSIER_RAW } from '@/types/agent';
-
-const KEY = 'agent_dossiers_v1';
+import { loadCollection, saveInBackground } from './cloud-store';
 
 /** A saved case file in the user's personal dossier library. */
 export interface SavedDossier {
@@ -18,23 +17,11 @@ export interface SavedDossier {
 }
 
 export function loadDossiers(): SavedDossier[] {
-  try {
-    const text = localStorage.getItem(KEY);
-    if (!text) return [];
-    const parsed = JSON.parse(text) as SavedDossier[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((d) => d && typeof d === 'object' && d.dossier);
-  } catch {
-    return [];
-  }
+  return loadCollection<SavedDossier>('dossiers').sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function saveDossiers(list: SavedDossier[]): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list));
-  } catch {
-    /* storage full / unavailable — ignore */
-  }
+  saveInBackground('dossiers', list);
 }
 
 export function newDossierId(): string {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BookOpen, FolderOpen } from 'lucide-react';
 import { Sidebar } from '@/components/assistant/Sidebar';
 import { MessageList } from '@/components/assistant/MessageList';
-import { ChatInput, type RetrieveMode } from '@/components/assistant/ChatInput';
+import { ChatInput } from '@/components/assistant/ChatInput';
 import { EmptyState } from '@/components/assistant/EmptyState';
 import { KnowledgePanel } from '@/components/assistant/KnowledgePanel';
 import { streamChat, uploadFile, extractDossier } from '@/lib/agent-client';
@@ -18,7 +18,8 @@ import { loadKB, saveKB, kbToText, type KBEntry } from '@/lib/knowledge';
 import { CaseDossier } from '@/components/assistant/CaseDossier';
 import { AppearancePanel } from '@/components/assistant/AppearancePanel';
 import { Workbench } from '@/components/assistant/Workbench';
-import { ContractPanel } from '@/components/assistant/ContractPanel';
+import { SkillPanel } from '@/components/assistant/SkillPanel';
+import { SKILL_CATALOG, findSkill, type SkillId, type SkillInfo } from '@/lib/skills';
 import { loadAppearance, applyAppearance, watchSystemTheme, isDarkMode, type Appearance } from '@/lib/appearance';
 import type {
   AgentEvent,
@@ -26,17 +27,14 @@ import type {
   ChatMessage,
   Session,
   ToolCallView,
+  ModelInfo,
   CaseDossier as Dossier,
 } from '@/types/agent';
 import { DOSSIER_CAUSES, EMPTY_DOSSIER, IMAGE_DOSSIER_RAW } from '@/types/agent';
 import { dossierToText } from '@/types/agent';
-
-interface ModelInfo {
-  id: string;
-  label: string;
-  free: boolean;
-  available: boolean;
-}
+import { AccountControls } from '@/components/assistant/CloudAccount';
+import { authHeaders } from '@/lib/cloudbase';
+import { flushCloudStore, getPrivacy, loadCollection, refreshConversation, reportSyncError, saveCollection, stageRecovery } from '@/lib/cloud-store';
 
 function makeMsg(role: ChatMessage['role'], content = ''): ChatMessage {
   return { id: crypto.randomUUID(), role, content, createdAt: Date.now() };
@@ -84,14 +82,89 @@ function fileToImageDataUrl(file: File): Promise<string> {
   });
 }
 
+/** Map a free-form cause of action onto the fixed dropdown options. */
+function matchCause(v: string): string {
+  if (DOSSIER_CAUSES.includes(v)) return v;
+  if (/商标/.test(v)) return '商标侵权';
+  if (/专利/.test(v)) return '专利侵权';
+  if (/著作权|版权/.test(v)) return '著作权侵权';
+  if (/不正当竞争/.test(v)) return '不正当竞争';
+  if (/商业秘密/.test(v)) return '商业秘密';
+  return v;
+}
+
+/** Merge LLM-extracted dossier fields into the existing case file. */
+function mergeDossier(
+  existing: Dossier | undefined,
+  extracted: Record<string, unknown>,
+  raw?: string
+): Dossier {
+  const merged: Dossier = { ...EMPTY_DOSSIER, ...(existing || {}) };
+  // 重新识别同一份材料时，新结果应当覆盖旧结果（旧结果往往只填了部分字段）；
+  // 上传新材料时同样以新结果为准。仅在识别不出内容时保留原值。
+  for (const k of ['parties', 'cause', 'facts', 'claims', 'evidence'] as const) {
+    const v = extracted[k];
+    if (v == null) continue;
+    const norm = Array.isArray(v)
+      ? v.map((x) => String(x ?? '').trim()).filter(Boolean).join('；')
+      : String(v).trim();
+    if (!norm) continue;
+    merged[k] = k === 'cause' ? matchCause(norm) : norm;
+  }
+  if (raw) merged.raw = raw;
+  return merged;
+}
+
+// Local fallback: split the raw text by common Chinese case-file section
+// headings so the panel still shows something usable when the LLM fails or
+// returns empty fields. Title patterns are intentionally loose so different
+// drafts ("一、当事人" / "1. 当事人" / "当事人：" etc.) all match.
+function heuristicExtract(text: string): Record<string, string> {
+  const SECTION_PATTERNS: { key: string; re: RegExp }[] = [
+    { key: 'parties', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:当事人|原被告|诉讼参与人|原\s*告|被\s*告)[：:\s]/ },
+    { key: 'cause', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:案由|纠纷类型)[：:\s]/ },
+    { key: 'facts', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:基本事实|基本案情|案情简介|案情概述|事实与理由|案件事实|本院(?:经审理)?查明|经审理查明|查明事实|事实)[：:，,\s]/ },
+    { key: 'claims', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:诉讼请求|诉请|诉求|请求事项|请求判令|判决如下|判项|判令)[：:\s]/ },
+    { key: 'evidence', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:证据清单|证据目录|证据材料|证据列表|证据)[：:\s]/ },
+  ];
+  const positions: { key: string; start: number; headerLen: number }[] = [];
+  for (const { key, re } of SECTION_PATTERNS) {
+    const m = text.match(re);
+    if (m && m.index !== undefined) {
+      positions.push({ key, start: m.index + (m[1] ? m[1].length : 0), headerLen: m[0].length - (m[1] ? m[1].length : 0) });
+    }
+  }
+  if (!positions.length) return {};
+  positions.sort((a, b) => a.start - b.start);
+  const out: Record<string, string> = {};
+  for (let i = 0; i < positions.length; i++) {
+    const cur = positions[i];
+    const next = positions[i + 1];
+    const headerEnd = cur.start + cur.headerLen;
+    const bodyEnd = next ? next.start : text.length;
+    const body = text.slice(headerEnd, bodyEnd).replace(/^\s*[:：]?\s*/, '');
+    out[cur.key] = body.replace(/\s+\n/g, '\n').trim().slice(0, 1500);
+  }
+  return out;
+}
+
+
 export default function Index() {
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [currentId, setCurrentId] = useState<string>('');
+  const [initial] = useState(() => {
+    const history = loadSessions().filter(session => session.messages.length > 0);
+    const last = loadCollection<{ id: string; conversationId?: string }>('settings').find(item => item.id === 'current-conversation');
+    if (last?.conversationId && history.some(session => session.id === last.conversationId)) return { sessions: history, currentId: last.conversationId };
+    const fresh: Session = { id: newSessionId(), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+    return { sessions: [fresh, ...history], currentId: fresh.id };
+  });
+  const [sessions, setSessions] = useState<Session[]>(initial.sessions);
+  const [currentId, setCurrentId] = useState(initial.currentId);
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [streaming, setStreaming] = useState(false);
-  const [modelName, setModelName] = useState('DeepSeek V3');
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState('');
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     if (typeof localStorage === 'undefined') return 'zhipu-glm';
     return localStorage.getItem('agent-model') || 'zhipu-glm';
@@ -107,9 +180,11 @@ export default function Index() {
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
-  const [contractOpen, setContractOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [selectedSkill, setSelectedSkill] = useState<SkillId | undefined>();
   const [dossierBusy, setDossierBusy] = useState(false);
   const [library, setLibrary] = useState<SavedDossier[]>(() => loadDossiers());
+  const modelName = models.find(model => model.id === selectedModel)?.label || selectedModel;
   const [note, setNote] = useState<string | null>(null);
   const noteTimer = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -120,119 +195,47 @@ export default function Index() {
     noteTimer.current = window.setTimeout(() => setNote(null), 4500);
   }
 
-  /** Map a free-form cause of action onto the fixed dropdown options. */
-  function matchCause(v: string): string {
-    if (DOSSIER_CAUSES.includes(v)) return v;
-    if (/商标/.test(v)) return '商标侵权';
-    if (/专利/.test(v)) return '专利侵权';
-    if (/著作权|版权/.test(v)) return '著作权侵权';
-    if (/不正当竞争/.test(v)) return '不正当竞争';
-    if (/商业秘密/.test(v)) return '商业秘密';
-    return v;
-  }
+  const loadModels = useCallback((signal?: AbortSignal) => authHeaders()
+    .then(headers => fetch('/api/agent/models', { headers, signal }))
+    .then(response => {
+      if (!response.ok) throw new Error(response.status === 401 ? '登录已过期，请重新登录后加载模型。' : '模型列表加载失败，请重试。');
+      return response.json() as Promise<ModelInfo[]>;
+    })
+    .then(list => {
+      if (!Array.isArray(list)) throw new Error('模型列表格式异常，请重试。');
+      if (signal?.aborted) return;
+      setModels(list);
+      const firstAvailable = list.find(model => model.available);
+      setSelectedModel(previous => list.some(model => model.id === previous && model.available) ? previous : firstAvailable?.id || previous);
+    })
+    .catch((error: unknown) => {
+      if (!signal?.aborted) setModelsError(error instanceof Error ? error.message : '模型列表加载失败，请检查网络后重试。');
+    })
+    .finally(() => { if (!signal?.aborted) setModelsLoading(false); }), []);
 
-  /** Merge LLM-extracted dossier fields into the existing case file. */
-  function mergeDossier(
-    existing: Dossier | undefined,
-    extracted: Record<string, unknown>,
-    raw?: string
-  ): Dossier {
-    const merged: Dossier = { ...EMPTY_DOSSIER, ...(existing || {}) };
-    // 重新识别同一份材料时，新结果应当覆盖旧结果（旧结果往往只填了部分字段）；
-    // 上传新材料时同样以新结果为准。仅在识别不出内容时保留原值。
-    for (const k of ['parties', 'cause', 'facts', 'claims', 'evidence'] as const) {
-      const v = extracted[k];
-      if (v == null) continue;
-      const norm = Array.isArray(v)
-        ? v.map((x) => String(x ?? '').trim()).filter(Boolean).join('；')
-        : String(v).trim();
-      if (!norm) continue;
-      merged[k] = k === 'cause' ? matchCause(norm) : norm;
-    }
-    if (raw) merged.raw = raw;
-    return merged;
-  }
-
-  // Local fallback: split the raw text by common Chinese case-file section
-  // headings so the panel still shows something usable when the LLM fails or
-  // returns empty fields. Title patterns are intentionally loose so different
-  // drafts ("一、当事人" / "1. 当事人" / "当事人：" etc.) all match.
-  function heuristicExtract(text: string): Record<string, string> {
-    const SECTION_PATTERNS: { key: string; re: RegExp }[] = [
-      { key: 'parties', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:当事人|原被告|诉讼参与人|原\s*告|被\s*告)[：:\s]/ },
-      { key: 'cause', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:案由|纠纷类型)[：:\s]/ },
-      { key: 'facts', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:基本事实|基本案情|案情简介|案情概述|事实与理由|案件事实|本院(?:经审理)?查明|经审理查明|查明事实|事实)[：:，,\s]/ },
-      { key: 'claims', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:诉讼请求|诉请|诉求|请求事项|请求判令|判决如下|判项|判令)[：:\s]/ },
-      { key: 'evidence', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:证据清单|证据目录|证据材料|证据列表|证据)[：:\s]/ },
-    ];
-    const positions: { key: string; start: number; headerLen: number }[] = [];
-    for (const { key, re } of SECTION_PATTERNS) {
-      const m = text.match(re);
-      if (m && m.index !== undefined) {
-        positions.push({ key, start: m.index + (m[1] ? m[1].length : 0), headerLen: m[0].length - (m[1] ? m[1].length : 0) });
-      }
-    }
-    if (!positions.length) return {};
-    positions.sort((a, b) => a.start - b.start);
-    const out: Record<string, string> = {};
-    for (let i = 0; i < positions.length; i++) {
-      const cur = positions[i];
-      const next = positions[i + 1];
-      const headerEnd = cur.start + cur.headerLen;
-      const bodyEnd = next ? next.start : text.length;
-      const body = text.slice(headerEnd, bodyEnd).replace(/^\s*[:：]?\s*/, '');
-      out[cur.key] = body.replace(/\s+\n/g, '\n').trim().slice(0, 1500);
-    }
-    return out;
-  }
-
-  // Load persisted sessions once, then open a fresh blank conversation so the
-  // user can start typing immediately without pressing "新建对话" first.
-  // Existing history is preserved and stays listed in the sidebar.
   useEffect(() => {
-    const loaded = loadSessions();
-    const fresh: Session = {
-      id: newSessionId(),
-      title: '新对话',
-      messages: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    // Drop any leftover empty draft sessions so we don't accumulate blanks.
-    const history = loaded.filter((s) => s.messages.length > 0);
-    setSessions([fresh, ...history]);
-    setCurrentId(fresh.id);
-  }, []);
-
-  // Fetch available models and make sure the selected one is configured.
-  useEffect(() => {
-    fetch('/api/agent/models')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => {
-        if (!Array.isArray(j)) return;
-        setModels(j);
-        const match = j.find((m: ModelInfo) => m.id === selectedModel);
-        const firstFree = j.find((m: ModelInfo) => m.free && m.available);
-        if (!match || !match.available || !match.free) {
-          if (firstFree) setSelectedModel(firstFree.id);
-        } else {
-          setModelName(match.label);
-        }
-      })
-      .catch(() => {});
-  }, []);
+    const controller = new AbortController();
+    void loadModels(controller.signal);
+    return () => controller.abort();
+  }, [loadModels]);
 
   // Persist the chosen model and keep the sidebar label in sync.
   useEffect(() => {
     localStorage.setItem('agent-model', selectedModel);
-    const m = models.find((x) => x.id === selectedModel);
-    if (m) setModelName(m.label);
-  }, [selectedModel, models]);
+  }, [selectedModel]);
 
   // Persist whenever sessions change.
   useEffect(() => {
-    if (sessions.length) saveSessions(sessions);
-  }, [sessions]);
+    if (sessions.length) stageRecovery('sessions', sessions);
+    if (sessions.length && !streaming) saveSessions(sessions);
+  }, [sessions, streaming]);
+
+  useEffect(() => {
+    if (!currentId) return;
+    void saveCollection('settings', [{ id: 'current-conversation', conversationId: currentId }], false).catch(() => {});
+  }, [currentId]);
+
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   // Apply the saved appearance on load and re-apply whenever it changes.
   // Also re-apply on OS color-scheme change when the user picked 'system'.
@@ -315,9 +318,10 @@ export default function Index() {
     for (const f of Array.from(list)) {
       if (f.type.startsWith('image/')) {
         try {
+          const stored = await uploadFile(f);
           const dataUrl = await fileToImageDataUrl(f);
           added.push({
-            id: crypto.randomUUID(),
+            ...stored,
             name: f.name,
             size: f.size,
             kind: 'image',
@@ -327,14 +331,14 @@ export default function Index() {
             truncated: false,
             type: f.type,
           });
-        } catch {
-          /* ignore unreadable images */
+        } catch (error) {
+          showNote(error instanceof Error ? error.message : '图片上传失败');
         }
       } else {
         try {
           added.push(await uploadFile(f));
-        } catch {
-          /* ignore individual failures */
+        } catch (error) {
+          showNote(error instanceof Error ? error.message : '文件上传失败');
         }
       }
     }
@@ -385,6 +389,7 @@ export default function Index() {
   /** Open a saved case file in the dossier panel of the current conversation. */
   const useSavedDossier = useCallback(
     (item: SavedDossier) => {
+      if (streaming) { showNote('请等待当前回答保存后再切换卷宗。'); return; }
       const next: Dossier = { ...item.dossier, raw: item.raw };
       updateCurrent((s) => ({ ...s, dossier: next }));
       setLibrary((prev) =>
@@ -392,7 +397,7 @@ export default function Index() {
       );
       showNote(`已启用卷宗「${item.name}」，本对话将结合该案卷作答`);
     },
-    [updateCurrent, current?.id]
+    [updateCurrent, current?.id, streaming]
   );
 
   const renameSavedDossier = useCallback((id: string, name: string) => {
@@ -408,6 +413,7 @@ export default function Index() {
   /** Mirror edits made in the panel back into the linked library entry. */
   const handleDossierChange = useCallback(
     (d: Dossier) => {
+      if (streaming) { showNote('请等待当前回答保存后再修改卷宗。'); return; }
       updateCurrent((s) => ({ ...s, dossier: d }));
       setLibrary((prev) => {
         const idx = prev.findIndex((it) => it.sourceSessionId === current?.id);
@@ -423,15 +429,16 @@ export default function Index() {
         return [next[idx], ...next.filter((_, i) => i !== idx)];
       });
     },
-    [updateCurrent, current?.id]
+    [updateCurrent, current?.id, streaming]
   );
 
   const handleDossierUpload = useCallback(
     async (input: File | { text: string; name?: string }) => {
-      if (!current || dossierBusy) return;
+      if (!current || dossierBusy || streaming) return;
       setDossierBusy(true);
       try {
-        let payload: { text?: string; images?: string[] } = {};
+        const payload: { text?: string; images?: string[]; model?: string } = { model: selectedModel };
+        const sourceFiles: AttachedFile[] = [];
         let raw = '';
         if (!(input instanceof File)) {
           if (!input.text.trim()) throw new Error('粘贴内容为空');
@@ -440,10 +447,12 @@ export default function Index() {
         } else {
           const file = input;
           if (file.type.startsWith('image/')) {
+            sourceFiles.push(await uploadFile(file));
             payload.images = [await fileToImageDataUrl(file)];
             raw = IMAGE_DOSSIER_RAW;
           } else {
             const parsed = await uploadFile(file);
+            sourceFiles.push(parsed);
             if (!parsed.text.trim()) throw new Error('未能从文件提取文本（可能是扫描件或空文件）');
             payload.text = parsed.text;
             raw = parsed.text;
@@ -454,6 +463,7 @@ export default function Index() {
         let fields: Record<string, string> = {};
         let fallback = false;
         try {
+          if (!getPrivacy()) throw new Error('禁止外发模式，使用本地章节提取');
           fields = await extractDossier(payload);
           const filled = ['parties', 'cause', 'facts', 'claims', 'evidence'].filter(
             (k) => (fields[k] || '').trim()
@@ -468,6 +478,7 @@ export default function Index() {
           if (!fields[k]?.trim() && heur[k]?.trim()) fields[k] = heur[k];
         }
         const next = mergeDossier(current.dossier, fields, raw);
+        if (sourceFiles.length) next.sourceFiles = [...(next.sourceFiles || []), ...sourceFiles];
         updateCurrent((s) => ({ ...s, dossier: next }));
         archiveDossier(next, raw);
         setDossierOpen(true);
@@ -482,7 +493,7 @@ export default function Index() {
         setDossierBusy(false);
       }
     },
-    [current, dossierBusy, updateCurrent, archiveDossier]
+    [current, dossierBusy, updateCurrent, archiveDossier, selectedModel, streaming]
   );
 
   /** Re-run smart recognition on the saved raw material (text-based only). */
@@ -493,21 +504,26 @@ export default function Index() {
   }, [current, dossierBusy, handleDossierUpload]);
 
   const submit = useCallback(
-    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[]) => {
-      if (!text.trim() || streaming) return;
+    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[], skillId?: string) => {
+      if ((!text.trim() && !attachFiles.length) || streaming || !current) return;
+      if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
 
       const userMsg: ChatMessage = makeMsg('user', text);
+      if (skillId) userMsg.skillId = skillId;
       if (attachFiles.length) userMsg.files = attachFiles;
       const assistantMsg: ChatMessage = makeMsg('assistant');
+      assistantMsg.status = 'generating';
 
       const isFirst = !current || current.messages.length === 0;
 
-      updateCurrent((s) => ({
-        ...s,
-        title: isFirst ? firstLine(text) : s.title,
-        messages: [...s.messages, userMsg, assistantMsg],
+      const nextSession: Session = {
+        ...current,
+        title: isFirst ? firstLine(text) : current.title,
+        messages: [...(baseHistory ?? current.messages), userMsg, assistantMsg],
         updatedAt: Date.now(),
-      }));
+      };
+      const nextSessions = sessions.map(session => session.id === current.id ? nextSession : session);
+      setSessions(nextSessions);
 
       setStreaming(true);
 
@@ -517,6 +533,8 @@ export default function Index() {
       let acc = '';
 
       try {
+        await saveCollection('sessions', nextSessions);
+        await flushCloudStore();
         for await (const ev of streamChat(
           baseHistory ? [...baseHistory, userMsg] : [...current!.messages, userMsg],
           {
@@ -524,18 +542,33 @@ export default function Index() {
           signal: ac.signal,
           knowledge: kbEnabled ? kbToText(kb) : '',
           dossier: current!.dossier ? dossierToText(current!.dossier) : '',
+          conversationId: current.id,
+          assistantMessageId: assistantMsg.id,
+          skillId,
         })) {
           applyEvent(ev);
         }
       } catch (e) {
         applyEvent({ type: 'error', message: (e as Error).message || '生成失败' });
       } finally {
+        try {
+          const saved = await refreshConversation(current.id) as unknown as Session;
+          saved.messages = saved.messages.map(message => message.id === assistantMsg.id && message.status === 'generating'
+            ? { ...message, status: 'failed', content: message.content || '本次生成未完成，请核对模型授权与配置后重试。' } : message);
+          setSessions(previous => previous.map(session => session.id === current.id ? saved : session));
+        } catch (error) {
+          reportSyncError(error instanceof Error ? error.message : '无法确认对话保存状态');
+        }
         setStreaming(false);
         abortRef.current = null;
       }
 
       function applyEvent(ev: AgentEvent) {
         switch (ev.type) {
+          case 'skill':
+            updateCurrent(session => ({ ...session, messages: session.messages.map(message => message.id === assistantMsg.id
+              ? { ...message, skillIds: [...new Set([...(message.skillIds || []), ev.id])] } : message) }));
+            break;
           case 'token':
             acc += ev.content;
             updateCurrent((s) => ({
@@ -595,62 +628,34 @@ export default function Index() {
         }
       }
     },
-    [streaming, current, selectedModel, updateCurrent, kb, kbEnabled]
+    [streaming, current, selectedModel, updateCurrent, kb, kbEnabled, sessions]
   );
 
   const handleSend = useCallback(() => {
     const text = input.trim();
     if ((!text && files.length === 0) || streaming) return;
-    submit(text, files);
+    if (text === '/skills') { setSkillsOpen(true); setInput(''); return; }
+    if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
+    const mention = text.match(/^\$([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/)?.[1];
+    if (mention && !findSkill(mention)) { showNote('没有找到这个 Skill，请从 Skills 面板选择。'); return; }
+    const skillId = mention || selectedSkill;
+    submit(text, files, undefined, skillId);
     setInput('');
     setFiles([]);
-  }, [input, files, streaming, submit]);
+    setSelectedSkill(undefined);
+  }, [input, files, streaming, submit, selectedSkill]);
 
-  const handleRetrieve = useCallback(
-    (
-      mode: RetrieveMode,
-      payload: {
-        keyword: string;
-        code?: string;
-        article?: string;
-        cause?: string;
-        caseType?: string;
-        procedure?: string;
-        courtLevel?: string;
-        year?: string;
-        depth: 'fast' | 'deep';
-      }
-    ) => {
-      const { keyword, code, article, cause, caseType, procedure, courtLevel, year, depth } = payload;
-      let prompt: string;
-      if (mode === 'case') {
-        const filters: string[] = [];
-        if (cause) filters.push(`案由聚焦「${cause}」`);
-        if (caseType) filters.push(`案件类型为「${caseType}」`);
-        if (procedure) filters.push(`审判程序为「${procedure}」`);
-        if (courtLevel) filters.push(`法院层级为「${courtLevel}」`);
-        if (year) filters.push(`裁判年份约为「${year}」年`);
-        const filterText = filters.length ? `检索条件：${filters.join('；')}。` : '';
-        prompt =
-          depth === 'fast'
-            ? `请基于知识库与已有资料，快速给出${keyword ? `与「${keyword}」相关` : ''}的案例参考。${filterText}要求：\n1. 优先直接使用已提供的参考资料作答，不要联网检索；仅当参考资料明显不足时，才做至多 1 次简要联网核实；\n2. 每条案例简要写明法院层级与裁判要旨即可，最多 3 条，不展开长篇分析；\n3. 无法确认的案号或内容标注“需进一步核实”，严禁编造案号或裁判内容；\n4. 回答保持简短直接。`
-            : `请检索${keyword ? `与「${keyword}」相关` : ''}的类似司法案例。${filterText}要求：\n1. 调用联网搜索工具，优先检索中国裁判文书网（wenshu.court.gov.cn）、最高人民法院及各级法院官网、北大法宝等权威来源；\n2. 每条案例写明审理法院（含层级）、案号、裁判要旨，并附来源链接；\n3. 尽量贴近上述筛选条件，优先选用指导性案例与高级人民法院、最高人民法院的生效裁判；\n4. 若知识库中有相关案例也一并引用并标注出处；\n5. 无法确认的内容明确标注“需进一步核实”，严禁编造案号或裁判内容。`;
-      } else if (code || article) {
-        const ref = [code && `《${code}》`, article && article].filter(Boolean).join('');
-        prompt =
-          depth === 'fast'
-            ? `请基于知识库与已有资料，快速给出${ref || `与「${keyword}」相关法条`}的核心内容与适用要点。要求：\n1. 优先直接使用已提供的参考资料作答，不要联网检索；仅当参考资料明显不足时，才做至多 1 次简要联网核实；\n2. 列出法律名称、条文序号与条文要旨（不必逐字引用全文），最多 3 条；\n3. 不确定的内容标注“需进一步核实”，严禁编造文号或条文内容；\n4. 回答保持简短直接。`
-            : `请检索${ref}（及相关关联法条）的准确条文文本与理解适用。要求：\n1. 调用联网搜索工具，优先检索权威来源（中国商标网、国家知识产权局、最高人民法院、北大法宝等）；\n2. 完整列出该条文的制定机关、法律名称、条文序号与全文；若用户未指定具体条文，请围绕「${keyword || code}」给出最相关的 2-4 条法条；\n3. 每条法条附来源链接，并简要说明适用要点；\n4. 无法确认的内容明确标注“需进一步核实”，严禁编造文号或条文内容。`;
-      } else {
-        prompt =
-          depth === 'fast'
-            ? `请基于知识库与已有资料，快速给出与「${keyword}」相关的法条要点。要求：\n1. 优先直接使用已提供的参考资料作答，不要联网检索；仅当参考资料明显不足时，才做至多 1 次简要联网核实；\n2. 列出 2-3 条最相关法条（法律名称 + 条文序号 + 要旨），不必逐字引用全文；\n3. 不确定的内容标注“需进一步核实”，严禁编造文号；\n4. 回答保持简短直接。`
-            : `请检索与「${keyword}」相关的法律法规与法条。要求：\n1. 调用联网搜索工具，优先检索权威来源（中国商标网、国家知识产权局、最高人民法院、北大法宝等）；\n2. 每条法条写明制定机关、法律名称与条文序号，并附来源链接；\n3. 若知识库中有相关内容也一并引用并标注出处；\n4. 无法确认的内容明确标注“需进一步核实”，严禁编造文号。`;
-      }
-      submit(prompt, []);
-    },
-    [submit]
-  );
+  function pickSkill(skill: SkillInfo) {
+    setSelectedSkill(skill.id);
+    if (!input.trim() || input.trim() === '/skills' || SKILL_CATALOG.some(item => item.starter === input || item.starter.replace(/^\$[a-z0-9-]+\s*/, '') === input)) setInput(skill.starter);
+    else setInput(input.replace(/^\$[a-z0-9-]+(?=\s|$)/, `$${skill.id}`));
+    setSkillsOpen(false);
+  }
+
+  function clearSkill() {
+    setSelectedSkill(undefined);
+    setInput(input.replace(/^\$[a-z0-9-]+\s*/, ''));
+  }
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -675,7 +680,7 @@ export default function Index() {
         messages: s.messages.slice(0, userIdx),
         updatedAt: Date.now(),
       }));
-      submit(userMsg.content, userMsg.files || [], history);
+      submit(userMsg.content, userMsg.files || [], history, userMsg.skillId);
     },
     [current, streaming, updateCurrent, submit]
   );
@@ -696,28 +701,46 @@ export default function Index() {
         messages: s.messages.slice(0, idx),
         updatedAt: Date.now(),
       }));
-      submit(text, originalFiles, history);
+      submit(text, originalFiles, history, msgs[idx].skillId);
     },
     [current, streaming, updateCurrent, submit]
   );
 
-  /** 让助理基于当前模型/知识库/卷宗生成一段纯文本（用于事务台的邮件与新闻）。 */
+  /** 让助理基于当前模型/知识库/卷宗生成一段纯文本（用于事务台）。 */
   const generateText = useCallback(
     async (prompt: string, onToken: (text: string) => void): Promise<string> => {
+      if (streaming) throw new Error('请等待当前生成结束。');
+      if (!getPrivacy()) throw new Error('当前禁止向模型外发资料，请先在账号与隐私中明确授权。');
+      const userMessage = makeMsg('user', prompt);
+      const assistantMessage = { ...makeMsg('assistant'), status: 'generating' as const };
+      const session: Session = { id: newSessionId(), title: firstLine(prompt), messages: [userMessage, assistantMessage], createdAt: Date.now(), updatedAt: Date.now() };
+      const nextSessions = [session, ...sessions];
+      setSessions(nextSessions); setStreaming(true);
+      const controller = new AbortController(); abortRef.current = controller;
       let acc = '';
-      for await (const ev of streamChat([makeMsg('user', prompt)], {
-        model: selectedModel,
-        knowledge: kbEnabled ? kbToText(kb) : '',
-        dossier: current?.dossier ? dossierToText(current.dossier) : '',
-      })) {
-        if (ev.type === 'token') {
-          acc += ev.content;
-          onToken(acc);
+      try {
+        await saveCollection('sessions', nextSessions); await flushCloudStore();
+        for await (const ev of streamChat([userMessage], {
+          model: selectedModel, signal: controller.signal,
+          knowledge: kbEnabled ? kbToText(kb) : '',
+          dossier: current?.dossier ? dossierToText(current.dossier) : '',
+          conversationId: session.id, assistantMessageId: assistantMessage.id,
+        })) {
+          if (ev.type === 'error') throw new Error(ev.message);
+          if (ev.type === 'token') { acc += ev.content; onToken(acc); }
         }
+        return acc;
+      } finally {
+        try {
+          const saved = await refreshConversation(session.id) as unknown as Session;
+          saved.messages = saved.messages.map(message => message.id === assistantMessage.id && message.status === 'generating'
+            ? { ...message, status: 'failed', content: message.content || '本次生成未完成，请核对模型授权与配置后重试。' } : message);
+          setSessions(previous => previous.map(item => item.id === session.id ? saved : item));
+        } catch (error) { reportSyncError(error instanceof Error ? error.message : '无法确认保存状态'); }
+        setStreaming(false); abortRef.current = null;
       }
-      return acc;
     },
-    [selectedModel, kb, kbEnabled, current]
+    [selectedModel, kb, kbEnabled, current, sessions, streaming]
   );
 
   return (
@@ -725,22 +748,23 @@ export default function Index() {
       <Sidebar
         sessions={sessions}
         currentId={currentId}
-        onSelect={setCurrentId}
-        onNew={newChat}
-        onDelete={deleteSession}
+        onSelect={(id) => { if (!streaming) setCurrentId(id); }}
+        onNew={() => { if (!streaming) newChat(); }}
+        onDelete={(id) => { if (!streaming) deleteSession(id); }}
         modelName={modelName}
         onOpenAppearance={() => setAppearanceOpen(true)}
         onOpenWorkbench={() => setWorkbenchOpen(true)}
         right={appearance.sidebarSide === 'right'}
       />
       <main className={`flex min-w-0 flex-1 flex-col ${appearance.sidebarSide === 'right' ? 'order-1' : 'order-2'}`}>
-        <div className="flex items-center gap-2 border-b border-border px-5 py-3">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
           <span className="text-sm font-semibold">小知</span>
           <span className="text-[0.72rem] text-muted-foreground">知识产权办案助理</span>
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.7rem] text-primary">
-            本地会话
+            私人云端空间
           </span>
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <AccountControls disabled={streaming || dossierBusy} />
             <button
               onClick={() => setKbOpen(true)}
               className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[0.78rem] text-muted-foreground hover:border-primary/40 hover:text-foreground"
@@ -757,21 +781,6 @@ export default function Index() {
               <FolderOpen className="h-3.5 w-3.5" />
               卷宗
             </button>
-            <span className="text-[0.72rem] text-muted-foreground">模型</span>
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              disabled={streaming}
-              className="rounded-md border border-border bg-card px-2 py-1 text-[0.78rem] outline-none disabled:opacity-50"
-            >
-              {models.length === 0 && <option value="zhipu-glm">智谱 GLM-4.7</option>}
-              {models.map((m) => (
-                <option key={m.id} value={m.id} disabled={!m.available}>
-                  {m.label}
-                  {m.available ? '' : '（未配置）'}
-                </option>
-              ))}
-            </select>
           </div>
         </div>
 
@@ -786,7 +795,7 @@ export default function Index() {
           {current && current.messages.length > 0 ? (
             <MessageList messages={current.messages} avatar={appearance.avatar} onResend={resendEdited} onRegenerate={regenerate} />
           ) : (
-            <EmptyState onPick={(t) => { setInput(t); }} avatar={appearance.avatar} />
+            <EmptyState onPick={(t) => { setInput(t); }} onSkill={pickSkill} avatar={appearance.avatar} />
           )}
         </div>
 
@@ -800,10 +809,17 @@ export default function Index() {
           onRemoveFile={removeFile}
           streaming={streaming}
           disabled={streaming || !current}
-          onRetrieve={handleRetrieve}
+          onOpenSkills={() => setSkillsOpen(true)}
+          skillId={selectedSkill}
+          onClearSkill={clearSkill}
           onDossierFile={handleDossierUpload}
           dossierBusy={dossierBusy}
-          onOpenContract={() => setContractOpen(true)}
+          models={models}
+          selectedModel={selectedModel}
+          onModelChange={setSelectedModel}
+          modelsLoading={modelsLoading}
+          modelsError={modelsError}
+          onRetryModels={() => { setModelsLoading(true); setModelsError(''); void loadModels(); }}
         />
       </main>
 
@@ -820,7 +836,7 @@ export default function Index() {
         open={dossierOpen}
         onClose={() => setDossierOpen(false)}
         session={current}
-        busy={dossierBusy}
+        busy={dossierBusy || streaming}
         onReExtract={handleDossierReExtract}
         library={library}
         onUseSaved={useSavedDossier}
@@ -844,11 +860,7 @@ export default function Index() {
         dossierCaseName={current?.dossier?.parties}
       />
 
-      <ContractPanel
-        open={contractOpen}
-        onClose={() => setContractOpen(false)}
-        onGenerate={generateText}
-      />
+      <SkillPanel open={skillsOpen} onOpenChange={setSkillsOpen} onPick={pickSkill} />
     </div>
   );
 }

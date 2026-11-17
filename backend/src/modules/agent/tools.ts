@@ -1,12 +1,25 @@
 import type { ToolDefinition } from './types';
-import { env } from '../../config/env';
+import { SKILL_CATALOG, loadSkill } from './skills';
 
 /**
  * Tool catalogue exposed to the LLM. The model decides when to call these.
- * Each tool is implemented locally (no extra API keys required) except
- * web_search, which degrades gracefully when the network is unavailable.
+ * Skills load trusted instructions; no public-web search adapter is installed.
  */
 export const TOOLS: ToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'load_skill',
+      description: '按任务需要加载一个内置 Skill 的完整工作规范。可用于法条、案例、知产新闻整理、合同起草与审核；不会访问网络或增加权限。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_id: { type: 'string', description: '要加载的技能 ID', enum: SKILL_CATALOG.map(skill => skill.id) },
+        },
+        required: ['skill_id'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -43,46 +56,11 @@ export const TOOLS: ToolDefinition[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description:
-        '联网检索法律法规、司法解释、指导性案例、生效裁判文书以及最新行业资讯。当用户需要查询具体法条、案号、裁判要旨、赔偿标准、官方指引、司法解释时务必调用。尽量使用精确关键词，例如"专利法 第七十一条 赔偿数额""商标侵权 惩罚性赔偿 案例"。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '搜索关键词' },
-          max_results: { type: 'number', description: '返回结果数量，默认 5' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'trademark_search',
-      description:
-        '检索商标的注册信息：注册状态、注册号、国际分类（第几类）、申请人/权利人、核定使用商品，以及是否有近似商标。当用户询问某个商标是否注册、商标归属、类别、近似情况，或上传了商标图样要查其注册信息时务必调用。可检索中国商标网等公开来源。',
-      parameters: {
-        type: 'object',
-        properties: {
-          keyword: {
-            type: 'string',
-            description: '商标名称、申请人名称，或图样中识别出的主要文字。例如"华为""小米科技"。',
-          },
-          scope: {
-            type: 'string',
-            description: '检索范围：exact=精确查该商标，similar=查近似商标。默认 exact。',
-            enum: ['exact', 'similar'],
-          },
-        },
-        required: ['keyword'],
-      },
-    },
-  },
 ];
+
+export function availableTools(): ToolDefinition[] {
+  return TOOLS;
+}
 
 /**
  * Safe arithmetic evaluator (recursive descent). Avoids eval() entirely.
@@ -189,130 +167,6 @@ function datetimeTool(timezone?: string): string {
 }
 
 /**
- * Live web search for legal/regulatory/case research.
- *
- * Preferred path: a real search API (Tavily or SerpAPI) configured via env
- *   WEB_SEARCH_PROVIDER + WEB_SEARCH_API_KEY. Returns clean, citable results.
- * Fallback: HTML scraping of Bing/Baidu. In sandboxed environments without
- *   internet egress this still won't connect, in which case we return a clear
- *   message so the model answers from its own knowledge and flags items to verify.
- */
-async function searchTool(query: string, maxResults = 5): Promise<string> {
-  const provider = (env.WEB_SEARCH_PROVIDER || '').toLowerCase();
-  const key = env.WEB_SEARCH_API_KEY;
-
-  if (key && provider === 'tavily') {
-    try {
-      const resp = await fetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          api_key: key,
-          query,
-          max_results: maxResults,
-          search_depth: 'advanced',
-          include_answer: false,
-        }),
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!resp.ok) throw new Error('搜索服务返回 ' + resp.status);
-      const j = (await resp.json()) as { results?: { title: string; url: string; content: string }[] };
-      const results = (j.results || []).slice(0, maxResults);
-      if (results.length === 0) return `未找到关于「${query}」的检索结果，请尝试换一个关键词。`;
-      const formatted = results
-        .map((r, i) => `${i + 1}. ${r.title}\n   链接: ${r.url}\n   摘要: ${r.content}`)
-        .join('\n\n');
-      return `关于「${query}」的检索结果：\n\n${formatted}`;
-    } catch (err) {
-      return `联网检索暂时不可用（${(err as Error).message}）。请基于已有知识回答，并提示律师对关键法条/案号另行核实。`;
-    }
-  }
-
-  if (key && provider === 'serpapi') {
-    try {
-      const u = new URL('https://serpapi.com/search.json');
-      u.searchParams.set('engine', 'google');
-      u.searchParams.set('q', query);
-      u.searchParams.set('num', String(maxResults));
-      u.searchParams.set('api_key', key);
-      const resp = await fetch(u, { signal: AbortSignal.timeout(12000) });
-      if (!resp.ok) throw new Error('搜索服务返回 ' + resp.status);
-      const j = (await resp.json()) as { organic_results?: { title: string; link: string; snippet: string }[] };
-      const results = (j.organic_results || []).slice(0, maxResults);
-      if (results.length === 0) return `未找到关于「${query}」的检索结果，请尝试换一个关键词。`;
-      const formatted = results
-        .map((r, i) => `${i + 1}. ${r.title}\n   链接: ${r.link}\n   摘要: ${r.snippet}`)
-        .join('\n\n');
-      return `关于「${query}」的检索结果：\n\n${formatted}`;
-    } catch (err) {
-      return `联网检索暂时不可用（${(err as Error).message}）。请基于已有知识回答，并提示律师对关键法条/案号另行核实。`;
-    }
-  }
-
-  // No search API key configured: live retrieval is unavailable in this env.
-  return (
-    '当前环境未配置联网检索（缺少搜索 API Key，且沙箱禁止直接访问搜索引擎）。' +
-    '请基于已有法律知识回答，并在涉及具体法条文号、案号、裁判要旨时明确标注' +
-    '「建议律师开庭前通过北大法宝 / 裁判文书网等权威渠道核实」，不要编造依据。'
-  );
-}
-
-/**
- * Live trademark lookup. Delegates to the configured web search provider
- * (Tavily) with queries tuned to surface Chinese trademark registration data,
- * then returns structured, citable results. Falls back gracefully when no
- * search key is configured.
- */
-async function trademarkSearchTool(keyword: string, scope: 'exact' | 'similar' = 'exact'): Promise<string> {
-  const provider = (env.WEB_SEARCH_PROVIDER || '').toLowerCase();
-  const key = env.WEB_SEARCH_API_KEY;
-
-  if (!(key && provider === 'tavily')) {
-    return (
-      '当前未配置联网检索（缺少 Tavily 搜索 Key），无法实时检索商标。' +
-      '请基于已有知识回答，并明确提示律师通过中国商标网（sbj.cnipa.gov.cn）' +
-      '的「商标网上检索系统」核实该商标的注册状态、类别与权利人，不要编造注册号或申请人。'
-    );
-  }
-
-  const query =
-    scope === 'similar'
-      ? `${keyword} 商标 近似 注册 类别 申请人`
-      : `"${keyword}" 商标 注册号 国际分类 申请人 中国商标网`;
-
-  try {
-    const resp = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        api_key: key,
-        query,
-        max_results: 6,
-        search_depth: 'advanced',
-        include_answer: false,
-      }),
-      signal: AbortSignal.timeout(12000),
-    });
-    if (!resp.ok) throw new Error('搜索服务返回 ' + resp.status);
-    const j = (await resp.json()) as { results?: { title: string; url: string; content: string }[] };
-    const results = (j.results || []).slice(0, 6);
-    if (results.length === 0) {
-      return `未检索到关于商标「${keyword}」的公开注册信息。可能该商标尚未注册、名称不完整，或公开来源未收录。请以中国商标网（sbj.cnipa.gov.cn）商标网上检索系统的查询结果为准。`;
-    }
-    const formatted = results
-      .map((r, i) => `${i + 1}. ${r.title}\n   链接: ${r.url}\n   摘要: ${r.content}`)
-      .join('\n\n');
-    return (
-      `关于商标「${keyword}」的检索结果（${scope === 'similar' ? '近似商标' : '精确检索'}）：\n\n` +
-      `${formatted}\n\n` +
-      `（注：以上为网络公开来源，最终以中国商标网 sbj.cnipa.gov.cn 商标网上检索系统的登记信息为准。）`
-    );
-  } catch (err) {
-    return `商标检索暂时不可用（${(err as Error).message}）。请提示律师通过中国商标网（sbj.cnipa.gov.cn）核实，不要编造注册信息。`;
-  }
-}
-
-/**
  * Execute a tool by name. `arguments` is a JSON-encoded string from the LLM.
  */
 export async function executeTool(name: string, argsJson: string): Promise<string> {
@@ -325,17 +179,12 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
 
   try {
     switch (name) {
+      case 'load_skill':
+        return loadSkill(String(args.skill_id ?? ''));
       case 'calculator':
         return calcTool(String(args.expression ?? ''));
       case 'get_datetime':
         return datetimeTool(args.timezone ? String(args.timezone) : undefined);
-      case 'web_search':
-        return await searchTool(String(args.query ?? ''), Number(args.max_results) || 5);
-      case 'trademark_search':
-        return await trademarkSearchTool(
-          String(args.keyword ?? ''),
-          (args.scope === 'similar' ? 'similar' : 'exact') as 'exact' | 'similar'
-        );
       default:
         return `未知工具：${name}`;
     }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "合同起草"
+  short_description: "起草或审核知产合同，明确权利边界与条款风险"
+  default_prompt: "$contract-drafting 请协助起草或审核以下合同：\n任务：起草 / 审核\n合同类型：技术开发 / 许可 / 转让 / 保密 / 竞业限制\n我方立场：\n当事人、标的和商业条件：\n合同正文（审核时提供，也可上传附件）："

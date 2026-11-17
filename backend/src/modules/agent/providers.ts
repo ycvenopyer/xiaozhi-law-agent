@@ -15,14 +15,10 @@ const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 const ZHIPU_BASE = 'https://open.bigmodel.cn/api/paas/v4';
 const SILICONFLOW_BASE = 'https://api.siliconflow.cn/v1';
 
-/**
- * Models the UI can switch between. Only FREE models are listed — the paid
- * DeepSeek key is intentionally excluded so the app never bills the user.
- * Each model resolves its key from OPENROUTER_API_KEY (configured in .env).
- */
+/** Existing model catalogue. Availability means its platform key is configured,
+ * not that the endpoint has been tested or its current pricing verified. */
 export const MODEL_REGISTRY: ModelProvider[] = [
-  // Zhipu GLM-4.7 — permanent free, Chinese-strong, 200K context.
-  // Listed first so it's the default and fallback for any query type.
+  // Existing Zhipu entries retain their model IDs.
   {
     id: 'zhipu-glm',
     label: '智谱 GLM-4.7',
@@ -32,8 +28,6 @@ export const MODEL_REGISTRY: ModelProvider[] = [
     free: true,
     vision: false,
   },
-  // Zhipu GLM-4.7-FlashX — faster variant of GLM-4.7, same 200K context,
-  // also permanent free. Useful as a low-latency backup.
   {
     id: 'zhipu-flashx',
     label: '智谱 GLM-4.7-FlashX',
@@ -54,8 +48,6 @@ export const MODEL_REGISTRY: ModelProvider[] = [
     free: true,
     vision: true,
   },
-  // Zhipu GLM-4.5-Air — lightweight free text model, 128K context.
-  // Smaller/faster than GLM-4.7; a third backup if the others get rate-limited.
   {
     id: 'zhipu-air',
     label: '智谱 GLM-4.5-Air',
@@ -125,20 +117,15 @@ export function listProviders() {
     label: p.label,
     free: p.free,
     available: Boolean(p.apiKey),
+    provider: p.baseUrl === ZHIPU_BASE ? '智谱 AI' : p.baseUrl === SILICONFLOW_BASE ? 'SiliconFlow' : 'OpenRouter',
+    vision: Boolean(p.vision),
   }));
 }
 
-/**
- * Build an ordered fallback chain starting from the primary provider.
- * When the message contains images, only vision-capable models are included,
- * so a rate-limited model can transparently hand off to another free model.
- */
+/** Keep requests on the explicitly selected model. */
 export function getProviderChain(primary: ModelProvider, hasImages: boolean): ModelProvider[] {
-  const usable = MODEL_REGISTRY.filter((p) => p.apiKey);
-  const ok = usable.filter((p) => (hasImages ? p.vision : true));
-  const chain = [primary, ...ok.filter((p) => p.id !== primary.id)];
-  if (ok.length && !chain.some((p) => ok.includes(p))) chain.unshift(ok[0]);
-  return chain;
+  // Never transfer case materials to another model or supplier on failure.
+  return primary.apiKey && (!hasImages || primary.vision) ? [primary] : [];
 }
 
 /**

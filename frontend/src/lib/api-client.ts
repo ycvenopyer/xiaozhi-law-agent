@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { accessToken } from './cloudbase';
 
 /**
  * Axios instance configured for API requests
@@ -18,8 +19,8 @@ export const apiClient = axios.create({
  * Automatically adds authentication token to requests if available
  */
 apiClient.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('auth_token');
+  async (config) => {
+    const token = await accessToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -39,7 +40,6 @@ apiClient.interceptors.response.use(
   (error: AxiosError) => {
     // Handle 401 Unauthorized - redirect to login
     if (error.response?.status === 401) {
-      localStorage.removeItem('auth_token');
       // Uncomment when you have a login page
       // window.location.href = '/login';
     }

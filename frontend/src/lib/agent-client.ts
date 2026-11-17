@@ -1,4 +1,7 @@
 import type { AgentEvent, AttachedFile, ChatMessage } from '@/types/agent';
+import { authHeaders } from './cloudbase';
+import { acceptRecord, type CloudRecord } from './cloud-store';
+import { imageDataUrl, storeOriginal } from './private-files';
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
@@ -22,14 +25,17 @@ export async function* streamChat(
     signal?: AbortSignal;
     knowledge?: string;
     dossier?: string;
+    conversationId?: string;
+    assistantMessageId?: string;
+    skillId?: string;
   }
 ): AsyncGenerator<AgentEvent> {
   // Only send what the LLM needs: role + text content (including any attached
   // document text) and image data URLs for vision input. Tool calls/results are
   // handled server-side, so we strip them.
-  const payload = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => {
+  const payload = await Promise.all(messages
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map(async (m) => {
       let content = m.content;
       const images: string[] = [];
       if (m.files && m.files.length) {
@@ -37,8 +43,8 @@ export async function* streamChat(
           .filter((f) => f.kind !== 'image')
           .map((f) => `\n\n【附带的文档：${f.name}】\n${f.text}\n【文档结束】`)
           .join('');
-        const imgs = m.files.filter((f) => f.kind === 'image' && f.dataUrl);
-        for (const f of imgs) if (f.dataUrl) images.push(f.dataUrl);
+        const imgs = m.files.filter((f) => f.kind === 'image');
+        for (const f of imgs) images.push(await imageDataUrl(f));
         content = docs
           ? content
             ? content + docs
@@ -46,17 +52,15 @@ export async function* streamChat(
           : content;
       }
       return images.length ? { role: m.role, content, images } : { role: m.role, content };
-    });
+    }));
+
+  const body = serializeRequest({ messages: payload, model: opts?.model, knowledge: opts?.knowledge,
+    dossier: opts?.dossier, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId, skillId: opts?.skillId });
 
   const res = await fetch('/api/agent/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: serializeRequest({
-      messages: payload,
-      model: opts?.model,
-      knowledge: opts?.knowledge,
-      dossier: opts?.dossier,
-    }),
+    headers: { 'Content-Type': 'application/json', ...await authHeaders() },
+    body,
     signal: opts?.signal,
   });
 
@@ -88,7 +92,9 @@ export async function* streamChat(
       const data = line.slice(5).trim();
       if (!data) continue;
       try {
-        yield JSON.parse(data) as AgentEvent;
+        const event = JSON.parse(data) as AgentEvent | { type: 'saved'; record: CloudRecord };
+        if (event.type === 'saved') acceptRecord(event.record);
+        else yield event;
       } catch {
         /* ignore partial frames */
       }
@@ -104,9 +110,11 @@ export async function uploadFile(file: File): Promise<AttachedFile> {
   if (file.size > MAX_FILE_BYTES) {
     throw new Error('文件超过 4 MiB，请压缩或拆分后重试。');
   }
+  const stored = await storeOriginal(file);
+  if (stored.kind === 'image') return stored;
   const form = new FormData();
   form.append('file', file);
-  const res = await fetch('/api/agent/files', { method: 'POST', body: form });
+  const res = await fetch('/api/agent/files', { method: 'POST', headers: await authHeaders(), body: form });
   if (!res.ok) {
     let msg = '文件上传失败';
     try {
@@ -119,7 +127,7 @@ export async function uploadFile(file: File): Promise<AttachedFile> {
   }
   const j = await res.json();
   return {
-    id: crypto.randomUUID(),
+    ...stored,
     name: j.name,
     size: j.size,
     text: j.text,
@@ -136,11 +144,13 @@ export async function uploadFile(file: File): Promise<AttachedFile> {
 export async function extractDossier(payload: {
   text?: string;
   images?: string[];
+  model?: string;
 }): Promise<Record<string, string>> {
+  const body = serializeRequest(payload);
   const res = await fetch('/api/agent/extract-dossier', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: serializeRequest(payload),
+    headers: { 'Content-Type': 'application/json', ...await authHeaders() },
+    body,
   });
   if (!res.ok) {
     let msg = '卷宗识别失败';

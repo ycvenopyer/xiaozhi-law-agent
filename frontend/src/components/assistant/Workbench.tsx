@@ -3,7 +3,6 @@ import {
   CalendarClock,
   ClipboardList,
   FileText,
-  Newspaper,
   Users,
   X,
   Plus,
@@ -25,12 +24,12 @@ import {
   type ConflictMatter,
 } from '@/lib/workbench';
 
-type Tab = 'deadline' | 'doc' | 'news' | 'conflict';
+type Tab = 'deadline' | 'doc' | 'conflict';
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** 调用助理生成文本（邮件草稿 / 新闻汇总），实时回传 token。 */
+  /** 调用助理生成文本，实时回传 token。 */
   onGenerate: (prompt: string, onToken: (text: string) => void) => Promise<string>;
   /** 当前卷宗的当事人，用于预填期限台账的案号。 */
   dossierCaseName?: string;
@@ -82,9 +81,6 @@ export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props)
           <TabButton active={tab === 'doc'} onClick={() => setTab('doc')} icon={<FileText className="h-3.5 w-3.5" />}>
             文件起草
           </TabButton>
-          <TabButton active={tab === 'news'} onClick={() => setTab('news')} icon={<Newspaper className="h-3.5 w-3.5" />}>
-            知产新闻
-          </TabButton>
           <TabButton active={tab === 'conflict'} onClick={() => setTab('conflict')} icon={<Users className="h-3.5 w-3.5" />}>
             利益冲突
           </TabButton>
@@ -93,7 +89,6 @@ export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props)
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {tab === 'deadline' && <DeadlineTab dossierCaseName={dossierCaseName} />}
           {tab === 'doc' && <DocTab onGenerate={onGenerate} />}
-          {tab === 'news' && <NewsTab onGenerate={onGenerate} />}
           {tab === 'conflict' && <ConflictTab onGenerate={onGenerate} />}
         </div>
       </aside>
@@ -437,76 +432,6 @@ ${info}`;
           </div>
           <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2.5 text-[0.78rem] leading-relaxed">
             {draft}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ----------------------------- 每日知产新闻 ----------------------------- */
-
-function NewsTab({ onGenerate }: { onGenerate: Props['onGenerate'] }) {
-  const [summary, setSummary] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  async function fetchNews() {
-    if (busy) return;
-    setBusy(true);
-    setSummary('');
-    setCopied(false);
-    try {
-      await onGenerate(
-        `请使用联网搜索工具，汇总今天（${new Date().toISOString().slice(0, 10)}）知识产权领域的要闻，要求：
-1. 检索权威来源（国家知识产权局、中国商标网、最高人民法院、IPRdaily、知产力等）；
-2. 列出 5-8 条要闻，每条含标题、要点（1-2 句）与来源链接；
-3. 按“立法政策 / 典型案例 / 行业动态”分组；
-4. 无法确认的内容标注“需核实”，严禁编造。`,
-        setSummary
-      );
-    } catch (e) {
-      setSummary('⚠️ ' + ((e as Error).message || '获取失败'));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function copy() {
-    navigator.clipboard?.writeText(summary);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
-        一键联网检索并汇总当日知产领域要闻（立法政策 / 典型案例 / 行业动态），帮你用最短时间掌握行业动态。每次会消耗模型与搜索额度。
-      </p>
-
-      <button
-        onClick={fetchNews}
-        disabled={busy}
-        className="flex w-full items-center justify-center gap-1 rounded-md bg-primary px-3 py-1.5 text-[0.8rem] text-primary-foreground hover:opacity-90 disabled:opacity-40"
-      >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Newspaper className="h-3.5 w-3.5" />}
-        {busy ? '检索中…' : '获取今日汇总'}
-      </button>
-
-      {summary && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[0.74rem] font-medium text-foreground">今日知产要闻</span>
-            <button
-              onClick={copy}
-              className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground hover:text-foreground"
-            >
-              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-              {copied ? '已复制' : '复制'}
-            </button>
-          </div>
-          <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2.5 text-[0.78rem] leading-relaxed">
-            {summary}
           </pre>
         </div>
       )}

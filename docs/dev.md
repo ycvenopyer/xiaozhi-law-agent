@@ -1,5 +1,7 @@
 # EdgeOne Pages 前后端一体部署指南
 
+> 数据持久化已升级为 CloudBase PG。本页关于 localStorage、匿名聊天接口的旧描述不再适用于当前代码。请先完成 [CloudBase 配置与数据库迁移](cloudbase.md)，再按本页的 Pages 构建步骤部署。
+
 核对日期：2026-11-06。适用于本仓库的 React + Vite 前端和 Express + TypeScript 后端。
 
 本仓库已完成本文第 3–7 节的代码适配，以及第 8 节第 1–2 项的本地安装、构建和待提交文件检查。尚未提交、推送代码或在控制台创建项目。平台功能与额度以实际账号控制台及本文末尾官方文档为准。
@@ -12,7 +14,7 @@
 浏览器 → https://你的域名/
           ├── 页面、JS、CSS、图片 → Pages 静态资源
           └── /api/*             → Node.js Cloud Functions
-                                     └── Express → 模型 / 搜索 API
+                                     └── Express → Skills / 模型 API
 ```
 
 使用支持 npm、Express 的 **Cloud Functions（Node.js）**，目录为 `cloud-functions/`。不要混用边缘函数 `functions/` 的开发规范，也不要自行假定 `node-functions/` 是同等入口目录。
@@ -234,8 +236,6 @@ xiaozhi-law-agent/
 | `ZHIPU_API_KEY` | 智谱模型密钥，按需填写 |
 | `SILICONFLOW_API_KEY` | 硅基流动模型密钥，按需填写 |
 | `OPENROUTER_API_KEY` | OpenRouter 密钥，按需填写 |
-| `WEB_SEARCH_PROVIDER` | 可选，例如 `tavily` |
-| `WEB_SEARCH_API_KEY` | 搜索提供商密钥，可选 |
 | `LOG_LEVEL` | 可选，例如 `info` |
 
 至少为实际选用的模型提供商配置有效密钥。模型列表来自 `backend/src/modules/agent/providers.ts`；仅填 `LLM_API_KEY` 不代表列表中的智谱、硅基流动等模型就已配置。模型价格与可用性以提供商为准，不以代码中的 `free` 标签作为计费依据。

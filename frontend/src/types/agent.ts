@@ -1,5 +1,14 @@
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
+export interface ModelInfo {
+  id: string;
+  label: string;
+  free: boolean;
+  available: boolean;
+  vision?: boolean;
+  provider?: string;
+}
+
 export interface AttachedFile {
   id: string;
   name: string;
@@ -12,6 +21,8 @@ export interface AttachedFile {
   kind?: 'image' | 'doc';
   /** base64 data URL for image attachments */
   dataUrl?: string;
+  storagePath?: string;
+  storageBucket?: string;
 }
 
 export interface ToolCallView {
@@ -29,6 +40,9 @@ export interface ChatMessage {
   toolCalls?: ToolCallView[];
   files?: AttachedFile[];
   createdAt: number;
+  status?: 'generating' | 'complete' | 'failed' | 'interrupted';
+  skillId?: string;
+  skillIds?: string[];
 }
 
 export interface Session {
@@ -50,6 +64,7 @@ export interface CaseDossier {
   evidence: string;
   /** Original uploaded material, kept for reference (not sent to the model). */
   raw?: string;
+  sourceFiles?: AttachedFile[];
 }
 
 export const EMPTY_DOSSIER: CaseDossier = {
@@ -85,6 +100,7 @@ export function dossierToText(d?: CaseDossier): string {
 }
 
 export type AgentEvent =
+  | { type: 'skill'; id: string; name: string }
   | { type: 'token'; content: string }
   | { type: 'tool_start'; id: string; name: string; arguments: string }
   | { type: 'tool_end'; id: string; name: string; result: string }
@@ -93,8 +109,7 @@ export type AgentEvent =
 
 /** Friendly metadata for each built-in tool. */
 export const TOOL_META: Record<string, { label: string; icon: string; tone: string }> = {
+  load_skill: { label: '加载技能', icon: 'BookOpen', tone: 'text-primary' },
   calculator: { label: '计算', icon: 'Calculator', tone: 'text-emerald-600 dark:text-emerald-400' },
   get_datetime: { label: '时间', icon: 'Clock', tone: 'text-sky-600 dark:text-sky-400' },
-  web_search: { label: '联网搜索', icon: 'Globe', tone: 'text-violet-600 dark:text-violet-400' },
-  trademark_search: { label: '商标检索', icon: 'Copyright', tone: 'text-amber-600 dark:text-amber-400' },
 };

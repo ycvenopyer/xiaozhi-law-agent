@@ -6,6 +6,7 @@ import { AnimatedRoutes } from "@/components/AnimatedRoutes";
 import { PageTransition } from "@/components/PageTransition";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
+import { CloudAccountGate } from '@/components/assistant/CloudAccount';
 
 /**
  * Configure TanStack Query client with optimized defaults
@@ -38,7 +39,7 @@ function App() {
         <Toaster />
         <BrowserRouter>
           <AnimatedRoutes>
-            <Route path="/" data-genie-title="Home Page" data-genie-key="Home" element={<PageTransition transition="slide-up"><Index /></PageTransition>} />
+            <Route path="/" data-genie-title="Home Page" data-genie-key="Home" element={<PageTransition transition="slide-up"><CloudAccountGate><Index /></CloudAccountGate></PageTransition>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" data-genie-key="NotFound" data-genie-title="Not Found" element={<PageTransition transition="fade"><NotFound /></PageTransition>} />
           </AnimatedRoutes>

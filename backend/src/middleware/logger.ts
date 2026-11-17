@@ -3,6 +3,7 @@ import { logger } from '../config/logger'
 
 export const httpLogger = pinoHttp({
   logger,
+  redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie'],
   // Only log errors (4xx, 5xx) and warnings, skip successful requests
   autoLogging: {
     ignore: req => {

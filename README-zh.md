@@ -24,7 +24,7 @@
 - **文档分析**：解析 PDF、DOCX 和文本文件；将图片交给支持视觉输入的模型。
 - **知识库**：维护法条、案例等条目，作为回答的参考上下文。
 - **法律工作台**：提供合同起草、合同审核、法条与案例检索入口。
-- **内置工具**：计算器、日期时间、联网搜索与基于公开网页的商标检索。
+- **内置工具**：计算器、日期时间；法条与案例基于已提供的知识库和材料整理。
 - **本地持久化**：通过浏览器保存会话、卷宗、知识条目与外观设置。
 
 ## 技术架构
@@ -180,8 +180,6 @@ curl http://localhost:8080/api/agent/models
 | `ZHIPU_API_KEY` | 启用已注册的智谱文本、视觉模型。 |
 | `SILICONFLOW_API_KEY` | 启用已注册的硅基流动模型。 |
 | `OPENROUTER_API_KEY` | 启用已注册的 OpenRouter 模型。 |
-| `WEB_SEARCH_PROVIDER` | 可选：`tavily` 或 `serpapi`。 |
-| `WEB_SEARCH_API_KEY` | 所选搜索服务的 Key。 |
 | `NODE_ENV` | `development`、`production` 或 `test`；默认 `development`。 |
 | `PORT` | 后端端口，默认 `3000`。 |
 | `API_PREFIX` | 默认 `/api`；前端使用固定 `/api` 路径，请保留。 |
@@ -191,14 +189,7 @@ curl http://localhost:8080/api/agent/models
 | `LLM_MAX_TOKENS` | 默认 `2000`。 |
 | `WEB_DIST` | 可选：前端构建产物路径，默认指向 `frontend/dist`。 |
 
-需要联网研究和商标检索时，追加：
-
-```dotenv
-WEB_SEARCH_PROVIDER=tavily
-WEB_SEARCH_API_KEY=replace_with_your_search_key
-```
-
-普通联网搜索也支持 SerpAPI；**商标工具目前只支持 Tavily**，检索对象是公开网页，并非直连官方商标注册数据库。未配置搜索 Key 时仍可聊天，但无法实时联网检索。
+法条、案例、知产新闻、合同起草与审核使用内置 Skills，支持面板选择、`/skills`、`$技能名` 和模型按需加载。规范位于 `agent-skills/*/SKILL.md`，扩展方式见 [Skills 开发说明](docs/skills.md)。当前不提供网页搜索；法条、案例依赖知识库和提供的材料，新闻需提供正文。商标注册信息请通过官方渠道另行核实。
 
 图片分析要求账号能够访问注册表中的视觉模型。接入其他 OpenAI 兼容端点或自建模型时，需要修改 `providers.ts` 注册模型，仅修改通用 `LLM_*` 配置不会完成接入。
 
@@ -255,7 +246,7 @@ WEB_SEARCH_API_KEY=replace_with_your_search_key
 | 单端口访问首页返回 404 | 启动前执行 `npm run build`，确认存在 `frontend/dist`。 |
 | 出现 `import.meta`、ESM 或 CommonJS 构建错误 | 后端使用本文提供的 `tsx` 源码运行命令。 |
 | 本地热更新失败 | 按开发步骤说明处理 `server.hmr` 配置。 |
-| 联网搜索或商标检索不可用 | 检查搜索 Key；商标工具必须使用 Tavily。 |
+| 联网搜索或商标检索不可用 | 联网搜索默认关闭；商标注册信息请通过官方渠道核实。 |
 | 文件过大或扫描 PDF 无文字 | 减小文件；扫描 PDF 先 OCR，或使用图片输入。 |
 
 ## 参与贡献
@@ -274,3 +265,7 @@ npm run test:edgeone
 ## 许可证
 
 [Apache License 2.0](./LICENSE)。
+
+## CloudBase 数据持久化
+
+本项目新增 CloudBase PG 登录、私有存储、用户隔离与旧数据导入。部署前请先阅读 [CloudBase 接入步骤](docs/cloudbase.md)，执行首次迁移并配置前后端 Publishable Key。数据库业务数据不再默认保存在 localStorage。

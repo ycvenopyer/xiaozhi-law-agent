@@ -1,4 +1,5 @@
-/** 案件期限台账：本地存储的办案期限节点。 */
+import { loadCollection, saveInBackground } from './cloud-store';
+/** 案件期限台账：按登录用户保存至云端。 */
 export interface Deadline {
   id: string;
   caseName: string;
@@ -8,8 +9,6 @@ export interface Deadline {
   note: string;
   done: boolean;
 }
-
-const KEY = 'agent-deadlines';
 
 export const DEADLINE_TYPES = [
   '答辩期',
@@ -22,22 +21,11 @@ export const DEADLINE_TYPES = [
 ];
 
 export function loadDeadlines(): Deadline[] {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
+  return loadCollection<Deadline>('deadlines');
 }
 
 export function saveDeadlines(list: Deadline[]) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list));
-  } catch {
-    /* ignore */
-  }
+  saveInBackground('deadlines', list);
 }
 
 /** 距离今天剩余天数；null 表示日期无效。 */
@@ -71,25 +59,12 @@ export interface ConflictMatter {
   note: string;
 }
 
-const KEY_CONFLICT = 'agent-conflicts';
-
 export function loadConflicts(): ConflictMatter[] {
-  try {
-    const raw = localStorage.getItem(KEY_CONFLICT);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
+  return loadCollection<ConflictMatter>('conflicts');
 }
 
 export function saveConflicts(list: ConflictMatter[]) {
-  try {
-    localStorage.setItem(KEY_CONFLICT, JSON.stringify(list));
-  } catch {
-    /* ignore */
-  }
+  saveInBackground('conflicts', list);
 }
 
 /** 去公司后缀 / 括号备注，便于粗略比对关联主体。 */

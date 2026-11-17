@@ -1,0 +1,4 @@
+interface:
+  display_name: "检索案例"
+  short_description: "寻找可比裁判，比较事实、争点与裁判理由"
+  default_prompt: "$case-research 请从已提供材料中查找类似案例，说明与本案的异同：\n争点 / 关键词：\n案由（选填）：\n法院 / 年份 / 程序（选填）："

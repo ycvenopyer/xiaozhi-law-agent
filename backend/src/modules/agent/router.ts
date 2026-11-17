@@ -1,178 +1,136 @@
+import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { env } from '../../config/env';
-import { runAgent, extractDossier, friendlyError } from './llm';
-import { getProvider, listProviders } from './providers';
+import { runAgent, extractDossier } from './llm';
+import { MODEL_REGISTRY, listProviders } from './providers';
 import { upload, parseFile } from './files';
-import type { ChatMessage } from './types';
+import { identity, recordRpc, type UserRecord } from '../cloudbase';
+import { requireModelConsent } from './privacy';
+import { AppError } from '../../middleware/errorHandler';
+import type { ChatMessage, AgentEvent } from './types';
+import { findSkill, SKILL_CATALOG, skillMention } from './skills';
 
 export const agentRouter = Router();
-
-/** GET /api/agent/config — lets the UI show the default model and setup state. */
-agentRouter.get('/config', (_req: Request, res: Response) => {
-  res.json({
-    model: env.LLM_MODEL,
-    baseUrl: env.LLM_BASE_URL,
-    configured: Boolean(env.LLM_API_KEY),
-  });
-});
-
-/** GET /api/agent/models — list switchable models and which are configured. */
-agentRouter.get('/models', (_req: Request, res: Response) => {
-  res.json(listProviders());
-});
+agentRouter.get('/models', (_req, res) => res.json(listProviders()));
+agentRouter.get('/skills', (_req, res) => res.json(SKILL_CATALOG));
 
 const messageSchema = z.object({
-  role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.union([z.string(), z.null()]).optional(),
-  tool_calls: z.any().optional(),
-  tool_call_id: z.string().optional(),
-  name: z.string().optional(),
-  images: z.array(z.string()).optional(),
+  role: z.enum(['user', 'assistant']), content: z.string(),
+  images: z.array(z.string().startsWith('data:image/')).max(8).optional(),
+});
+const chatSchema = z.object({
+  messages: z.array(messageSchema).min(1).max(60), model: z.string(),
+  knowledge: z.string().optional(), dossier: z.string().optional(),
+  skillId: z.string().max(64).optional(),
+  conversationId: z.string().min(1).max(200), assistantMessageId: z.string().min(1).max(200),
 });
 
-const chatBodySchema = z.object({
-  messages: z.array(messageSchema).min(1).max(60),
-  model: z.string().optional(),
-  // Curated laws/cases the UI sends so the model answers from authority.
-  knowledge: z.string().optional(),
-  // Structured case dossier (parties / cause / facts / claims / evidence) so
-  // the assistant reasons about the actual matter instead of in the abstract.
-  dossier: z.string().optional(),
-});
+function selectedModel(id: string, hasImages: boolean) {
+  const model = MODEL_REGISTRY.find(provider => provider.id === id);
+  if (!model || !model.apiKey) throw new AppError(400, '所选模型不存在或未配置。');
+  if (hasImages && !model.vision) throw new AppError(400, '图片分析需要选择支持视觉的模型，不会自动切换供应商。');
+  return model;
+}
 
-/**
- * POST /api/agent/chat
- * Server-Sent Events stream of AgentEvents:
- *   token | tool_start | tool_end | done | error
- */
 agentRouter.post('/chat', async (req: Request, res: Response) => {
-  const parsed = chatBodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ message: '请求格式不正确：messages 必须是非空数组。' });
+  const parsed = chatSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: '请求格式不正确或上下文过长，请新建对话。' });
+  const input = parsed.data;
+  const skillId = input.skillId || skillMention(input.messages.filter(message => message.role === 'user').at(-1)?.content || '');
+  const skill = findSkill(skillId);
+  if (skillId && !skill) return res.status(400).json({ message: '该 Skill 不存在，请刷新技能列表后重试。' });
+  const user = identity(res);
+  const provider = selectedModel(input.model, input.messages.some(message => !!message.images?.length));
+  await requireModelConsent(user.token);
+  const runId = randomUUID();
+  const record = await recordRpc<UserRecord>(user.token, 'begin_chat', { p_id: input.conversationId, p_run: runId });
+  const stored = record.payload;
+  const messages = Array.isArray(stored.messages) ? stored.messages as Array<Record<string, unknown>> : [];
+  const assistant = messages.find(message => message.id === input.assistantMessageId && message.role === 'assistant');
+  if (!assistant) {
+    await recordRpc(user.token, 'finish_chat', { p_id: input.conversationId, p_run: runId, p_payload: stored });
+    throw new AppError(400, '请先保存本次消息再生成回答。');
   }
 
-  const hasImages = parsed.data.messages.some(
-    (m) => Array.isArray(m.images) && m.images.length > 0
-  );
-  const provider = getProvider(parsed.data.model, hasImages);
-  if (!provider.apiKey) {
-    const avail = listProviders()
-      .filter((p) => p.available)
-      .map((p) => p.label);
-    return res.status(400).json({
-      message: `所选模型未配置对应 API Key。当前可用：${avail.join('、') || '无'}`,
-    });
-  }
-
-  // Set SSE headers early so the browser receives tokens live.
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Cache-Control', 'no-store, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
-
-  const send = (obj: unknown) => {
-    if (!res.writableEnded && !res.destroyed) {
-      res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    }
+  const send = (event: unknown) => {
+    if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(event)}\n\n`);
   };
-
-  // Heartbeat: corporate proxies (and Cloud Studio's gateway) silently drop
-  // idle SSE streams after 30-60s. A trivial periodic comment line keeps the
-  // socket warm without polluting the parsed event stream.
-  const heartbeat = setInterval(() => {
-    if (!res.writableEnded) res.write(': ping\n\n');
-  }, 15_000);
-
   const ac = new AbortController();
-  // End before Pages' 120-second hard limit so the browser receives an error.
-  const deadline = setTimeout(() => {
-    ac.abort();
-    send({ type: 'error', message: '本次请求超过 110 秒，请缩短问题或减少材料后重试。' });
-    clearInterval(heartbeat);
-    res.end();
-  }, 110_000);
-  // Use res (not req) close: req 'close' fires once express.json() finishes
-  // reading the body, which would abort generation before it starts.
-  res.on('close', () => {
-    ac.abort();
-    clearTimeout(deadline);
-    clearInterval(heartbeat);
-  });
-
+  let timedOut = false;
+  let completed = false;
+  let failure = '';
+  let content = '';
+  const toolCalls: Array<Record<string, unknown>> = [];
+  const activatedSkills = new Set<string>();
+  const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 15_000);
+  // Leave time to persist a partial answer before the platform's hard limit.
+  const deadline = setTimeout(() => { timedOut = true; ac.abort(); }, 100_000);
+  res.on('close', () => { ac.abort(); clearInterval(heartbeat); clearTimeout(deadline); });
   try {
-    await runAgent(
-      parsed.data.messages as ChatMessage[],
-      send as any,
-      ac.signal,
-      provider,
-      parsed.data.knowledge,
-      parsed.data.dossier
-    );
-  } catch (err) {
-    send({ type: 'error', message: (err as Error).message || '生成失败' });
+    await runAgent(input.messages as ChatMessage[], (event: AgentEvent) => {
+      if (event.type === 'token') content += event.content;
+      if (event.type === 'skill') activatedSkills.add(event.id);
+      if (event.type === 'tool_start') toolCalls.push({ ...event, status: 'running' });
+      if (event.type === 'tool_end') {
+        const tool = toolCalls.find(item => item.id === event.id);
+        if (tool) Object.assign(tool, { result: event.result, status: 'done' });
+      }
+      if (event.type === 'done') { completed = true; return; }
+      send(event);
+    }, ac.signal, provider, input.knowledge, input.dossier, skill?.id);
+  } catch {
+    // Do not expose upstream response bodies, prompts, or supplier diagnostics.
+    failure = '模型生成失败，请稍后重试。';
   } finally {
-    clearTimeout(deadline);
-    clearInterval(heartbeat);
+    clearTimeout(deadline); clearInterval(heartbeat);
+    if (timedOut) failure = '生成超过 100 秒，已保存已收到的内容。';
+    const status = failure ? 'failed' : ac.signal.aborted && !completed ? 'interrupted' : 'complete';
+    assistant.content = content || (failure ? `⚠️ ${failure}` : '');
+    assistant.status = status;
+    assistant.toolCalls = toolCalls;
+    assistant.skillIds = [...activatedSkills];
+    stored.updatedAt = Date.now();
+    try {
+      const saved = await recordRpc<UserRecord>(user.token, 'finish_chat', {
+        p_id: input.conversationId, p_run: runId, p_payload: stored,
+      });
+      send({ type: 'saved', record: saved });
+      if (failure) send({ type: 'error', message: failure });
+      send({ type: 'done' });
+    } catch {
+      send({ type: 'error', message: '回答未能确认保存，请保留页面内容并刷新核对云端记录。' });
+    }
     if (!res.writableEnded) res.end();
   }
+  return undefined;
 });
 
-/**
- * POST /api/agent/files  (multipart/form-data, field name "file")
- * Returns extracted text so the client can include it in the next prompt.
- */
+// Parsing stays inside this backend; this endpoint never calls a model.
 agentRouter.post('/files', upload.single('file'), async (req: Request, res: Response) => {
-  if (!req.file) {
-    return res.status(400).json({ message: '未收到文件' });
-  }
-  try {
-    const result = await parseFile(req.file);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ message: (err as Error).message || '文件解析失败' });
-  }
+  if (!req.file) return res.status(400).json({ message: '未收到文件。' });
+  const result = await parseFile(req.file);
+  return res.json(result);
 });
 
-/**
- * POST /api/agent/extract-dossier
- * Body: { text?: string, images?: string[] }
- * Uses the LLM to turn raw case material into a structured dossier
- * (parties / cause / facts / claims / evidence) without streaming.
- */
 agentRouter.post('/extract-dossier', async (req: Request, res: Response) => {
-  const schema = z.object({
-    text: z.string().optional(),
-    images: z.array(z.string()).optional(),
-  });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ message: '请求格式不正确' });
-  }
-  const { text, images } = parsed.data;
-  if (!text && !images?.length) {
-    return res.status(400).json({ message: '请上传卷宗文本或图片' });
-  }
+  const input = z.object({ text: z.string().optional(), images: z.array(z.string().startsWith('data:image/')).max(8).optional(),
+    model: z.string() }).parse(req.body);
+  if (!input.text && !input.images?.length) throw new AppError(400, '请提供卷宗材料。');
+  const provider = selectedModel(input.model, !!input.images?.length);
+  await requireModelConsent(identity(res).token);
   const ac = new AbortController();
-  const deadline = setTimeout(() => {
-    ac.abort();
-    if (!res.writableEnded && !res.destroyed) {
-      res.status(504).json({ message: '卷宗识别超过 110 秒，请减少材料后重试。' });
-    }
-  }, 110_000);
-  res.on('close', () => {
-    ac.abort();
-    clearTimeout(deadline);
-  });
+  const deadline = setTimeout(() => ac.abort(), 100_000);
+  res.on('close', () => ac.abort());
   try {
-    const result = await extractDossier({ text, images }, ac.signal);
-    if (!res.writableEnded && !res.destroyed) res.json(result);
-  } catch (err) {
-    if (!res.writableEnded && !res.destroyed) {
-      res.status(500).json({ message: friendlyError(String((err as Error)?.message || err)) });
-    }
-  } finally {
-    clearTimeout(deadline);
-  }
+    const result = await extractDossier(input, ac.signal, provider);
+    if (!res.destroyed) return res.json(result);
+  } catch {
+    if (!res.destroyed) return res.status(ac.signal.aborted ? 504 : 502).json({ message: '卷宗识别失败，可使用本地章节提取或稍后重试。' });
+  } finally { clearTimeout(deadline); }
+  return undefined;
 });

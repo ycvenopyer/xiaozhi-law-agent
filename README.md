@@ -24,7 +24,7 @@ XiaoZhi (小知) is a case-aware AI assistant for intellectual property work, in
 - **Document analysis:** extract text from PDF, DOCX, and text files; send images to a vision-capable model.
 - **Knowledge base:** maintain statutes and cases and include them in the assistant's context.
 - **Legal workbench:** dedicated entry points for contract drafting/review and statute/case research.
-- **Built-in tools:** arithmetic, date/time, web search, and trademark research through public web sources.
+- **Built-in tools:** arithmetic and date/time; legal and case references use the supplied knowledge base and materials.
 - **Browser persistence:** store conversations, dossiers, knowledge entries, and appearance settings locally.
 
 ## Architecture
@@ -178,8 +178,6 @@ All backend settings go in `backend/.env`; shell environment variables take prec
 | `ZHIPU_API_KEY` | Enables registered Zhipu text/vision models. |
 | `SILICONFLOW_API_KEY` | Enables registered SiliconFlow models. |
 | `OPENROUTER_API_KEY` | Enables registered OpenRouter models. |
-| `WEB_SEARCH_PROVIDER` | Optional: `tavily` or `serpapi`. |
-| `WEB_SEARCH_API_KEY` | Key for the selected search service. |
 | `NODE_ENV` | `development`, `production`, or `test`; default `development`. |
 | `PORT` | Backend port; default `3000`. |
 | `API_PREFIX` | Default `/api`; keep it because the frontend uses `/api`. |
@@ -189,14 +187,7 @@ All backend settings go in `backend/.env`; shell environment variables take prec
 | `LLM_MAX_TOKENS` | Default `2000`. |
 | `WEB_DIST` | Optional path to built frontend assets; defaults to `frontend/dist`. |
 
-For web research and trademark search, add:
-
-```dotenv
-WEB_SEARCH_PROVIDER=tavily
-WEB_SEARCH_API_KEY=replace_with_your_search_key
-```
-
-General web search also supports SerpAPI. **The trademark tool specifically requires Tavily** and searches public web pages; it is not a direct official trademark-registry integration. Without a search key, local chat can still run, but live research is unavailable. Image analysis requires access to a registered vision-capable model. To add a different OpenAI-compatible endpoint or a self-hosted model, update `providers.ts`; generic `LLM_*` settings alone do not register it.
+Statute research, case research, IP news summaries and contract drafting/review are built-in Skills. Select one in the UI, use `/skills` or a `$skill-name` mention, or let the model load one on demand. Instructions live in `agent-skills/*/SKILL.md`; see [Skills development](docs/skills.md). Public-web search is not provided. Research uses supplied materials and the knowledge base; news summaries require source text. Verify trademark registration details through official sources. Image analysis requires a registered vision-capable model. To add another OpenAI-compatible endpoint, update `providers.ts`; generic `LLM_*` settings alone do not register it.
 
 ## Usage
 
@@ -251,7 +242,7 @@ Default base path: `/api`.
 | Root page returns 404 | Run `npm run build` before starting the single-port service; check `frontend/dist`. |
 | `import.meta` / ESM / CommonJS build error | Use the documented `tsx` source command for the backend. |
 | Local hot reload fails | See the `server.hmr` workaround in the development section. |
-| Search or trademark lookup unavailable | Configure search keys; trademark lookup needs Tavily specifically. |
+| Search or trademark lookup unavailable | Web search is disabled by default; verify trademark details through official sources. |
 | Large upload or scanned PDF produces no useful text | Reduce file size; OCR scanned PDFs first or use image input. |
 
 ## Contributing

@@ -2,9 +2,19 @@
   "name": "xiaozhi-law-agent",
   "private": true,
   "type": "module",
-  "workspaces": ["frontend", "backend"],
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
   "scripts": {
+    "skills:build": "node scripts/build-skills.mjs",
+    "skills:check": "node scripts/build-skills.mjs --check",
     "build": "npm run build --workspace frontend",
-    "test:edgeone": "tsx --test scripts/edgeone.test.ts"
+    "test:edgeone": "tsx --test scripts/edgeone.test.ts",
+    "test:database": "tsx --test scripts/cloudbase-db.test.ts",
+    "test:cloudbase-key": "tsx --test scripts/cloudbase-key.test.ts"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16"
   }
 }

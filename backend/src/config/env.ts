@@ -1,5 +1,6 @@
 import dotenv from 'dotenv'
 import { z } from 'zod'
+import { assemblePublishableKey } from '../../../shared/cloudbase-key.mjs'
 
 dotenv.config()
 
@@ -14,6 +15,8 @@ const envSchema = z.object({
   ).default('*'),
   RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default('900000'),
   RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).default('100'),
+  CLOUDBASE_ENV_ID: z.string().regex(/^[a-zA-Z0-9-]+$/).default('xiaozhi-law-agent-d3d75m0c534925'),
+  CLOUDBASE_PUBLISHABLE_KEY: z.string().optional(),
 
   // ============================================
   // LLM (OpenAI-compatible) configuration
@@ -23,14 +26,6 @@ const envSchema = z.object({
   LLM_MODEL: z.string().default('deepseek-chat'),
   LLM_TEMPERATURE: z.string().transform(Number).default('0.7'),
   LLM_MAX_TOKENS: z.string().transform(Number).default('2000'),
-
-  // Optional web search provider for live legal/case retrieval.
-  //  - Tavily:  WEB_SEARCH_PROVIDER=tavily  WEB_SEARCH_API_KEY=<key>
-  //  - SerpAPI: WEB_SEARCH_PROVIDER=serpapi WEB_SEARCH_API_KEY=<key>
-  // When unset, the assistant answers from its own knowledge and flags
-  // statutes/cases for the lawyer to verify (no live internet in sandbox).
-  WEB_SEARCH_PROVIDER: z.string().optional(),
-  WEB_SEARCH_API_KEY: z.string().optional(),
 
   // OpenRouter key — unlocks free models (Qwen 14B / Llama 8B) and other
   // OpenAI-compatible models. Leave blank to use only DeepSeek.
@@ -48,7 +43,10 @@ const envSchema = z.object({
 
 const parseEnv = () => {
   try {
-    return envSchema.parse(process.env)
+    return envSchema.parse({
+      ...process.env,
+      CLOUDBASE_PUBLISHABLE_KEY: assemblePublishableKey(process.env, 'CLOUDBASE_PUBLISHABLE_KEY') || undefined,
+    })
   } catch (error) {
     console.error('❌ Invalid environment variables:', error)
     process.exit(1)

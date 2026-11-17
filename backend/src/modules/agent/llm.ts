@@ -1,7 +1,8 @@
 import { env } from '../../config/env';
-import { TOOLS, executeTool } from './tools';
+import { availableTools, executeTool } from './tools';
 import { MODEL_REGISTRY, getProviderChain, type ModelProvider } from './providers';
 import type { AgentEvent, ChatMessage } from './types';
+import { findSkill, loadSkill, SKILL_DISCOVERY } from './skills';
 
 const SYSTEM_PROMPT = `你是一位资深知识产权律师的私人助理，长期协助其办理知识产权侵权案件，业务涵盖专利、商标、著作权、商业秘密、不正当竞争等领域。你的核心职责是：
 
@@ -19,9 +20,9 @@ const SYSTEM_PROMPT = `你是一位资深知识产权律师的私人助理，长
 
 信息来源与检索要求：
 - 参考资料（每次对话可能随附）为经整理的核心法条与典型案例，应优先据其作答并注明出处；与问题无关的参考资料可不引用。
-- 检索节制（务必遵守）：先判断知识库与已有知识能否回答；一般每次提问最多进行 2-3 次联网搜索，收集到足够信息后立即停止检索并输出完整回答，不要为了"更权威"反复补搜。知识库已覆盖的内容直接引用，不要重复联网检索。整个提问过程中工具调用总次数原则上不超过 4 次（如商标检索：精确查一次 + 近似查一次即可）。
-- 检索法律法规、案例、最新资讯时，务必调用联网搜索工具并附上来源链接；优先采信权威来源（中国商标网 sbj.cnipa.gov.cn、国家知识产权局、北大法宝、最高人民法院及各级法院官网、指导性案例）。
-- 涉及商标查询（注册状态、类别、近似商标、申请人、注册号）时，务必调用商标检索工具并附上来源链接；如检索不到，明确提示通过中国商标网商标网上检索系统核实。
+- 当前没有联网检索工具。只能使用知识库、卷宗和已提供材料；不得声称查询了实时网页、外部数据库或最新资讯，单独提供的网址也不代表已经读取正文。
+- 法条与案例应注明材料出处，仅当材料提供了来源链接时才附链接；资料不足时明确提示需要通过官方渠道核实。
+- 涉及商标注册状态、类别、申请人、注册号等信息时，无法从材料确认的内容必须提示通过中国商标网核实，不能编造登记信息。
 - 图像识别：当用户上传商标图样、合同照片、判决书截图、侵权实物照片、取证材料图片等证据时，应仔细识别其中的文字、标识、权利人、金额、日期等关键信息，结合案件给出分析；若图片模糊或信息不全，应说明无法确认的部分。
 
 免责与保密：
@@ -83,8 +84,8 @@ async function* streamCompletions(
   const body = {
     model: provider.model,
     messages: messages.map(toApiMessage),
-    tools: withTools && TOOLS.length ? TOOLS : undefined,
-    tool_choice: withTools && TOOLS.length ? 'auto' : undefined,
+    tools: withTools ? availableTools() : undefined,
+    tool_choice: withTools ? 'auto' : undefined,
     temperature: env.LLM_TEMPERATURE,
     max_tokens: env.LLM_MAX_TOKENS,
     stream: true,
@@ -258,7 +259,8 @@ async function completeJson(
  */
 export async function extractDossier(
   input: { text?: string; images?: string[] },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  selectedProvider: ModelProvider = MODEL_REGISTRY[0]
 ): Promise<Record<string, string>> {
   const parts: unknown[] = [
     { type: 'text', text: EXTRACT_PROMPT + '\n\n【卷宗材料】\n' + (input.text || '（见所附图片）') },
@@ -268,7 +270,7 @@ export async function extractDossier(
   }
   const messages: JsonMessage[] = [{ role: 'user', content: parts }];
   const hasImages = (input.images?.length ?? 0) > 0;
-  const chain = getProviderChain(MODEL_REGISTRY[0], hasImages);
+  const chain = getProviderChain(selectedProvider, hasImages);
 
   let lastErr: unknown;
   for (const provider of chain) {
@@ -327,12 +329,20 @@ export async function runAgent(
   signal?: AbortSignal,
   provider: ModelProvider = MODEL_REGISTRY[0],
   knowledge?: string,
-  dossier?: string
+  dossier?: string,
+  skillId?: string
 ): Promise<void> {
   // Ensure a system persona is present. Inject the case dossier (this matter's
   // background) and the curated knowledge base (laws/cases) so the model reasons
   // from the actual case rather than answering in the abstract.
-  let systemPrompt = SYSTEM_PROMPT;
+  let systemPrompt = `${SYSTEM_PROMPT}\n\n${SKILL_DISCOVERY}`;
+  const skill = findSkill(skillId);
+  const loadedSkills = new Set<string>();
+  if (skill) {
+    systemPrompt += `\n\n${loadSkill(skill.id)}`;
+    loadedSkills.add(skill.id);
+    onEvent({ type: 'skill', id: skill.id, name: skill.name });
+  }
   const dossierText = dossier?.trim();
   const knowledgeText = knowledge?.trim();
   if (dossierText) {
@@ -348,7 +358,7 @@ export async function runAgent(
       : [{ role: 'system', content: systemPrompt }, ...history.map((m) => ({ ...m }))];
 
   const MAX_ROUNDS = 3;
-  /** Cap per-tool-result length so stacked searches cannot overflow the model context. */
+  /** Bound external data results; registered skill instructions are loaded in full. */
   const TOOL_RESULT_LIMIT = 2400;
   const clip = (s: string) => (s.length > TOOL_RESULT_LIMIT ? s.slice(0, TOOL_RESULT_LIMIT) + '\n…（结果过长已截断）' : s);
   // Transient upstream failures (free-tier rate limits, network blips) are
@@ -422,8 +432,17 @@ export async function runAgent(
           const args = tc.function.arguments;
           onEvent({ type: 'tool_start', id: tc.id, name, arguments: args });
           const result = await executeTool(name, args);
+          if (name === 'load_skill') {
+            let requested: string | undefined;
+            try { requested = JSON.parse(args).skill_id; } catch { /* executeTool returns a validation error */ }
+            const activated = findSkill(requested);
+            if (activated && !loadedSkills.has(activated.id)) {
+              loadedSkills.add(activated.id);
+              onEvent({ type: 'skill', id: activated.id, name: activated.name });
+            }
+          }
           onEvent({ type: 'tool_end', id: tc.id, name, result });
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: clip(result) });
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: name === 'load_skill' ? result : clip(result) });
           executedTools = true;
         }
         // 检索节制：已经过多轮检索后，明确要求模型停止搜索、直接作答。
@@ -435,7 +454,7 @@ export async function runAgent(
           messages.push({
             role: 'user',
             content:
-              '已经完成多轮检索，现有信息通常已足够。请立即停止调用工具，直接基于以上检索结果输出完整、结构化的最终回答（法律依据—分析—结论），并附来源链接；检索不到的内容标注"需进一步核实"。',
+              '已经完成多轮工具调用。请基于已加载的技能规范和已提供的材料直接回答；资料不足时说明缺口，不编造来源或事实。',
           });
         }
         streamErr = null;
@@ -506,7 +525,7 @@ export async function runAgent(
       {
         role: 'user',
         content:
-          '检索轮次已达上限，请立即停止调用任何工具。请综合以上全部检索结果与知识库内容，直接输出完整、结构化的最终回答（法律依据—事实认定—分析—结论），法条与案例附来源链接；检索不到的部分标注"需进一步核实"。',
+          '工具调用轮次已达上限。请按已加载技能和所提供材料直接输出最终回答；没有可靠依据的内容标注待核实，引用链接仅限材料中实际提供的链接。',
       },
     ];
     let streamedAny = false;
@@ -532,7 +551,7 @@ export async function runAgent(
       const reason = lastErr ? friendlyError(String((lastErr as Error)?.message || lastErr)) : '模型未返回内容';
       onEvent({
         type: 'token',
-        content: `⚠️ 检索已完成，但生成最终回答时所有备用模型都暂时不可用（${reason}）。请稍等几秒后点击"重新生成"，已获取的检索结果会重新利用。`,
+        content: `⚠️ 所选模型暂时未返回可用回答（${reason}）。请稍后重试；隐私策略禁止自动切换至其他模型。`,
       });
     }
   }

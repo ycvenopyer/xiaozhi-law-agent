@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node ../scripts/build-skills.mjs",
+    "prebuild": "node ../scripts/build-skills.mjs",
     "dev": "vite --strictPort -l error",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

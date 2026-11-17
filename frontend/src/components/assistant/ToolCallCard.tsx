@@ -1,14 +1,13 @@
 import { useState } from 'react';
-import { Calculator, Clock, Globe, Wrench, Copyright, ChevronDown, Loader2 } from 'lucide-react';
+import { Calculator, Clock, BookOpen, Wrench, ChevronDown, Loader2 } from 'lucide-react';
 import type { ToolCallView } from '@/types/agent';
 import { TOOL_META } from '@/types/agent';
 
 const ICONS: Record<string, typeof Calculator> = {
   Calculator,
   Clock,
-  Globe,
+  BookOpen,
   Wrench,
-  Copyright,
 };
 
 function ToolIcon({ name }: { name: string }) {
