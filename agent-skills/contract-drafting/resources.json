@@ -1,0 +1,6 @@
+[
+  {"path":"references/intake-and-review.md","description":"输入条件、缺失信息处理及逐条风险审核方法","load":"on-activation"},
+  {"path":"references/clause-matrix.md","description":"按开发、许可、转让、保密或竞业限制类型核对条款时读取","load":"on-demand"},
+  {"path":"assets/contract-workpaper.md","description":"起草或审核的交付底稿模板","load":"on-activation"},
+  {"path":"assets/nda-skeleton.md","description":"用户需要保密协议谈判底稿时读取并按实际条件改写","load":"on-demand"}
+]

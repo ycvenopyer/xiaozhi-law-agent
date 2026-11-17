@@ -8,11 +8,17 @@ import { identity, recordRpc, type UserRecord } from '../cloudbase';
 import { requireModelConsent } from './privacy';
 import { AppError } from '../../middleware/errorHandler';
 import type { ChatMessage, AgentEvent } from './types';
-import { findSkill, SKILL_CATALOG, skillMention } from './skills';
+import { findSkill, loadSkill, resourceManifest, SKILL_CATALOG, skillMention } from './skills';
 
 export const agentRouter = Router();
 agentRouter.get('/models', (_req, res) => res.json(listProviders()));
 agentRouter.get('/skills', (_req, res) => res.json(SKILL_CATALOG));
+agentRouter.get('/skills/:id/prompt', (req, res) => {
+  const skill = findSkill(req.params.id);
+  if (!skill) return res.status(404).json({ message: '该 Skill 不存在。' });
+  if (req.query.version && req.query.version !== skill.version) return res.status(409).json({ message: '技能已更新，请刷新页面后重新选择。' });
+  return res.json({ id: skill.id, name: skill.name, version: skill.version, prompt: loadSkill(skill.id), resources: resourceManifest(skill.id) });
+});
 
 const messageSchema = z.object({
   role: z.enum(['user', 'assistant']), content: z.string(),
@@ -22,6 +28,7 @@ const chatSchema = z.object({
   messages: z.array(messageSchema).min(1).max(60), model: z.string(),
   knowledge: z.string().optional(), dossier: z.string().optional(),
   skillId: z.string().max(64).optional(),
+  skillVersion: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   conversationId: z.string().min(1).max(200), assistantMessageId: z.string().min(1).max(200),
 });
 
@@ -39,6 +46,7 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   const skillId = input.skillId || skillMention(input.messages.filter(message => message.role === 'user').at(-1)?.content || '');
   const skill = findSkill(skillId);
   if (skillId && !skill) return res.status(400).json({ message: '该 Skill 不存在，请刷新技能列表后重试。' });
+  if (input.skillVersion && input.skillVersion !== skill?.version) return res.status(409).json({ message: '技能已更新，请重新选择以加载最新提示词。' });
   const user = identity(res);
   const provider = selectedModel(input.model, input.messages.some(message => !!message.images?.length));
   await requireModelConsent(user.token);
@@ -94,6 +102,7 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
     assistant.status = status;
     assistant.toolCalls = toolCalls;
     assistant.skillIds = [...activatedSkills];
+    assistant.skillVersions = Object.fromEntries([...activatedSkills].map(id => [id, findSkill(id)?.version]));
     stored.updatedAt = Date.now();
     try {
       const saved = await recordRpc<UserRecord>(user.token, 'finish_chat', {

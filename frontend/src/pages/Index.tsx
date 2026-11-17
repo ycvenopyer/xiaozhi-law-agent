@@ -19,7 +19,7 @@ import { CaseDossier } from '@/components/assistant/CaseDossier';
 import { AppearancePanel } from '@/components/assistant/AppearancePanel';
 import { Workbench } from '@/components/assistant/Workbench';
 import { SkillPanel } from '@/components/assistant/SkillPanel';
-import { SKILL_CATALOG, findSkill, type SkillId, type SkillInfo } from '@/lib/skills';
+import { findSkill, prepareSkill, type PreparedSkill, type SkillId, type SkillInfo } from '@/lib/skills';
 import { loadAppearance, applyAppearance, watchSystemTheme, isDarkMode, type Appearance } from '@/lib/appearance';
 import type {
   AgentEvent,
@@ -182,6 +182,9 @@ export default function Index() {
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<SkillId | undefined>();
+  const [preparedSkill, setPreparedSkill] = useState<PreparedSkill | null>(null);
+  const [skillError, setSkillError] = useState('');
+  const skillAbortRef = useRef<AbortController | null>(null);
   const [dossierBusy, setDossierBusy] = useState(false);
   const [library, setLibrary] = useState<SavedDossier[]>(() => loadDossiers());
   const modelName = models.find(model => model.id === selectedModel)?.label || selectedModel;
@@ -235,7 +238,7 @@ export default function Index() {
     void saveCollection('settings', [{ id: 'current-conversation', conversationId: currentId }], false).catch(() => {});
   }, [currentId]);
 
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
+  useEffect(() => () => { abortRef.current?.abort(); skillAbortRef.current?.abort(); }, []);
 
   // Apply the saved appearance on load and re-apply whenever it changes.
   // Also re-apply on OS color-scheme change when the user picked 'system'.
@@ -504,12 +507,13 @@ export default function Index() {
   }, [current, dossierBusy, handleDossierUpload]);
 
   const submit = useCallback(
-    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[], skillId?: string) => {
+    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[], skillId?: string, skillVersion?: string) => {
       if ((!text.trim() && !attachFiles.length) || streaming || !current) return;
       if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
 
       const userMsg: ChatMessage = makeMsg('user', text);
       if (skillId) userMsg.skillId = skillId;
+      if (skillVersion) userMsg.skillVersion = skillVersion;
       if (attachFiles.length) userMsg.files = attachFiles;
       const assistantMsg: ChatMessage = makeMsg('assistant');
       assistantMsg.status = 'generating';
@@ -545,6 +549,7 @@ export default function Index() {
           conversationId: current.id,
           assistantMessageId: assistantMsg.id,
           skillId,
+          skillVersion,
         })) {
           applyEvent(ev);
         }
@@ -638,23 +643,36 @@ export default function Index() {
     if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
     const mention = text.match(/^\$([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/)?.[1];
     if (mention && !findSkill(mention)) { showNote('没有找到这个 Skill，请从 Skills 面板选择。'); return; }
-    const skillId = mention || selectedSkill;
-    submit(text, files, undefined, skillId);
+    if (selectedSkill && preparedSkill?.id !== selectedSkill) { showNote(skillError || '技能提示词正在加载，请稍候。'); return; }
+    const skillId = selectedSkill || mention;
+    const version = selectedSkill ? preparedSkill?.version : findSkill(mention)?.version;
+    submit(text, files, undefined, skillId, version);
     setInput('');
     setFiles([]);
     setSelectedSkill(undefined);
-  }, [input, files, streaming, submit, selectedSkill]);
+    setPreparedSkill(null); setSkillError('');
+  }, [input, files, streaming, submit, selectedSkill, preparedSkill, skillError]);
 
-  function pickSkill(skill: SkillInfo) {
+  async function pickSkill(skill: SkillInfo) {
+    skillAbortRef.current?.abort();
+    const controller = new AbortController(); skillAbortRef.current = controller;
     setSelectedSkill(skill.id);
-    if (!input.trim() || input.trim() === '/skills' || SKILL_CATALOG.some(item => item.starter === input || item.starter.replace(/^\$[a-z0-9-]+\s*/, '') === input)) setInput(skill.starter);
-    else setInput(input.replace(/^\$[a-z0-9-]+(?=\s|$)/, `$${skill.id}`));
+    setPreparedSkill(null); setSkillError('');
+    const mention = input.trimStart().match(/^\$([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/)?.[1];
+    if (mention && findSkill(mention)) setInput(input.replace(/^\s*\$[a-z0-9-]+\s*/, ''));
     setSkillsOpen(false);
+    try {
+      const skillContext = await prepareSkill(skill.id, skill.version, controller.signal);
+      if (!controller.signal.aborted) setPreparedSkill(skillContext);
+    } catch (error) {
+      if (!controller.signal.aborted) setSkillError(error instanceof Error ? error.message : '技能提示词加载失败，请重试。');
+    }
   }
 
   function clearSkill() {
+    skillAbortRef.current?.abort();
     setSelectedSkill(undefined);
-    setInput(input.replace(/^\$[a-z0-9-]+\s*/, ''));
+    setPreparedSkill(null); setSkillError('');
   }
 
   const stop = useCallback(() => {
@@ -680,7 +698,7 @@ export default function Index() {
         messages: s.messages.slice(0, userIdx),
         updatedAt: Date.now(),
       }));
-      submit(userMsg.content, userMsg.files || [], history, userMsg.skillId);
+      submit(userMsg.content, userMsg.files || [], history, userMsg.skillId, findSkill(userMsg.skillId)?.version);
     },
     [current, streaming, updateCurrent, submit]
   );
@@ -701,7 +719,7 @@ export default function Index() {
         messages: s.messages.slice(0, idx),
         updatedAt: Date.now(),
       }));
-      submit(text, originalFiles, history, msgs[idx].skillId);
+      submit(text, originalFiles, history, msgs[idx].skillId, findSkill(msgs[idx].skillId)?.version);
     },
     [current, streaming, updateCurrent, submit]
   );
@@ -795,7 +813,7 @@ export default function Index() {
           {current && current.messages.length > 0 ? (
             <MessageList messages={current.messages} avatar={appearance.avatar} onResend={resendEdited} onRegenerate={regenerate} />
           ) : (
-            <EmptyState onPick={(t) => { setInput(t); }} onSkill={pickSkill} avatar={appearance.avatar} />
+            <EmptyState onPick={(t) => { setInput(t); }} avatar={appearance.avatar} />
           )}
         </div>
 
@@ -808,10 +826,13 @@ export default function Index() {
           files={files}
           onRemoveFile={removeFile}
           streaming={streaming}
-          disabled={streaming || !current}
+          disabled={streaming || !current || (!!selectedSkill && preparedSkill?.id !== selectedSkill)}
           onOpenSkills={() => setSkillsOpen(true)}
           skillId={selectedSkill}
           onClearSkill={clearSkill}
+          preparedSkill={preparedSkill}
+          skillError={skillError}
+          onRetrySkill={() => { const skill = findSkill(selectedSkill); if (skill) void pickSkill(skill); }}
           onDossierFile={handleDossierUpload}
           dossierBusy={dossierBusy}
           models={models}

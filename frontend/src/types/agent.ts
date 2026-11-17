@@ -42,7 +42,9 @@ export interface ChatMessage {
   createdAt: number;
   status?: 'generating' | 'complete' | 'failed' | 'interrupted';
   skillId?: string;
+  skillVersion?: string;
   skillIds?: string[];
+  skillVersions?: Record<string, string>;
 }
 
 export interface Session {
@@ -110,6 +112,7 @@ export type AgentEvent =
 /** Friendly metadata for each built-in tool. */
 export const TOOL_META: Record<string, { label: string; icon: string; tone: string }> = {
   load_skill: { label: '加载技能', icon: 'BookOpen', tone: 'text-primary' },
+  read_skill_resource: { label: '读取技能参考与模板', icon: 'BookOpen', tone: 'text-primary' },
   calculator: { label: '计算', icon: 'Calculator', tone: 'text-emerald-600 dark:text-emerald-400' },
   get_datetime: { label: '时间', icon: 'Clock', tone: 'text-sky-600 dark:text-sky-400' },
 };

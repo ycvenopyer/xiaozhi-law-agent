@@ -28,6 +28,7 @@ export async function* streamChat(
     conversationId?: string;
     assistantMessageId?: string;
     skillId?: string;
+    skillVersion?: string;
   }
 ): AsyncGenerator<AgentEvent> {
   // Only send what the LLM needs: role + text content (including any attached
@@ -55,7 +56,7 @@ export async function* streamChat(
     }));
 
   const body = serializeRequest({ messages: payload, model: opts?.model, knowledge: opts?.knowledge,
-    dossier: opts?.dossier, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId, skillId: opts?.skillId });
+    dossier: opts?.dossier, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId, skillId: opts?.skillId, skillVersion: opts?.skillVersion });
 
   const res = await fetch('/api/agent/chat', {
     method: 'POST',

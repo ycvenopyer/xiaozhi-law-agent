@@ -357,7 +357,7 @@ export async function runAgent(
       ? history.map((m) => ({ ...m }))
       : [{ role: 'system', content: systemPrompt }, ...history.map((m) => ({ ...m }))];
 
-  const MAX_ROUNDS = 3;
+  const MAX_ROUNDS = 5;
   /** Bound external data results; registered skill instructions are loaded in full. */
   const TOOL_RESULT_LIMIT = 2400;
   const clip = (s: string) => (s.length > TOOL_RESULT_LIMIT ? s.slice(0, TOOL_RESULT_LIMIT) + '\n…（结果过长已截断）' : s);
@@ -442,14 +442,14 @@ export async function runAgent(
             }
           }
           onEvent({ type: 'tool_end', id: tc.id, name, result });
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: name === 'load_skill' ? result : clip(result) });
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: name === 'load_skill' || name === 'read_skill_resource' ? result : clip(result) });
           executedTools = true;
         }
         // 检索节制：已经过多轮检索后，明确要求模型停止搜索、直接作答。
         const toolRoundCount = messages.filter(
           (m) => m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0
         ).length;
-        if (toolRoundCount >= 2 && !nudged) {
+        if (toolRoundCount >= 4 && !nudged) {
           nudged = true;
           messages.push({
             role: 'user',

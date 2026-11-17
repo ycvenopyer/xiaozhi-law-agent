@@ -1,7 +1,8 @@
 import { useState, useRef, type KeyboardEvent } from 'react';
-import { Paperclip, Send, Square, X, FileText, FolderUp, Layers3 } from 'lucide-react';
+import { Paperclip, Send, Square, X, FileText, FolderUp, Layers3, Loader2 } from 'lucide-react';
 import type { AttachedFile, ModelInfo } from '@/types/agent';
 import { findSkill } from '@/lib/skills';
+import type { PreparedSkill } from '@/lib/skills';
 import { SkillIcon } from './SkillPanel';
 import { ModelSelector } from './ModelSelector';
 
@@ -18,6 +19,9 @@ interface Props {
   onOpenSkills: () => void;
   skillId?: string;
   onClearSkill: () => void;
+  preparedSkill: PreparedSkill | null;
+  skillError: string;
+  onRetrySkill: () => void;
   onDossierFile: (input: File | { text: string; name?: string }) => void;
   dossierBusy?: boolean;
   models: ModelInfo[];
@@ -92,8 +96,8 @@ export function ChatInput(props: Props) {
             <Layers3 className="h-3.5 w-3.5" />Skills
           </button>
           {props.skillId && <span className="flex min-w-0 items-center gap-1.5 rounded-lg bg-muted px-2 py-1.5 text-xs">
-            <SkillIcon id={props.skillId} className="h-3 w-3 text-primary" />
-            本次 · {findSkill(props.skillId)?.name}
+            {!props.preparedSkill && !props.skillError ? <Loader2 className="h-3 w-3 animate-spin text-primary" /> : <SkillIcon id={props.skillId} className="h-3 w-3 text-primary" />}
+            {props.preparedSkill ? '已加载' : props.skillError ? '加载失败' : '加载中'} · {findSkill(props.skillId)?.name}
             <button onClick={props.onClearSkill} disabled={props.streaming} aria-label="取消本次技能" className="rounded p-0.5 hover:bg-background"><X className="h-3 w-3" /></button>
           </span>}
           <button
@@ -139,6 +143,15 @@ export function ChatInput(props: Props) {
             }}
           />
         </div>
+
+        {props.skillId && props.skillError && <div role="alert" className="mx-3 mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-destructive/20 px-3 py-2 text-xs text-destructive">
+          <span>{props.skillError}</span><button onClick={props.onRetrySkill} className="font-medium underline underline-offset-2">重试加载</button>
+        </div>}
+        {props.preparedSkill && <details key={`${props.preparedSkill.id}:${props.preparedSkill.version}`} className="mx-3 mt-2 rounded-lg border border-primary/15 bg-primary/3 text-xs">
+          <summary className="cursor-pointer px-3 py-2 text-primary">查看已加载提示词 · {props.preparedSkill.resources.length} 份参考与模板</summary>
+          <p className="px-3 pb-2 leading-relaxed text-muted-foreground">随本次问题加入系统提示词；标为按需的资源由技能按任务读取。</p>
+          <pre aria-label="已加载的技能提示词" className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words border-t border-border px-3 py-2 font-mono text-[0.72rem] leading-relaxed text-muted-foreground">{props.preparedSkill.prompt}</pre>
+        </details>}
 
         {/* 卷宗上传弹窗(上传文档/粘贴文本) */}
         {dossierPopover && (
@@ -206,7 +219,7 @@ export function ChatInput(props: Props) {
             onChange={(e) => props.onChange(e.target.value)}
             onKeyDown={handleKey}
             rows={2}
-            placeholder={props.skillId ? '补充任务条件，可附上材料后发送…' : '描述你的任务，输入 /skills 选择技能，或上传材料…'}
+            placeholder={props.skillId ? '技能提示词已单独加载，在这里描述需求或附上材料…' : '描述你的任务，输入 /skills 选择技能，或上传材料…'}
             className="max-h-40 min-h-[3rem] w-full resize-none bg-transparent px-1 py-2 text-[0.95rem] outline-none placeholder:text-muted-foreground"
           />
         </div>
