@@ -58,7 +58,7 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
               onChange={(e) => setDraft(e.target.value)}
               rows={Math.min(8, Math.max(2, draft.split('\n').length))}
               autoFocus
-              className="w-full resize-none bg-transparent text-[0.95rem] leading-relaxed text-foreground outline-none"
+              className="w-full resize-none bg-transparent text-[length:var(--font-size-body)] leading-relaxed text-foreground outline-none"
               placeholder="编辑消息…"
             />
             <div className="mt-2 flex items-center justify-end gap-2">
@@ -93,7 +93,7 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
       <div className="msg-user flex flex-col items-end">
         <div className="max-w-[82%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-primary-foreground shadow-sm">
           {message.content && (
-            <p className="whitespace-pre-wrap text-[0.95rem] leading-relaxed">{message.content}</p>
+            <p className="whitespace-pre-wrap text-[length:var(--font-size-body)] leading-relaxed">{message.content}</p>
           )}
           {message.files?.map(file => <PrivateAttachment key={file.id} file={file} />)}
         </div>
@@ -128,7 +128,7 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
           </div>
         ) : (
           <>
-            <Markdown content={message.content} />
+            <div className="rounded-2xl rounded-tl-sm border border-border bg-card px-4 py-2.5"><Markdown content={message.content} /></div>
             {(message.status === 'failed' || message.status === 'interrupted') && <p role="status" className="mt-2 text-xs text-muted-foreground">生成未完成，可核对已有内容后重新生成。</p>}
             {message.content.trim() !== '' && (
               <MessageActions

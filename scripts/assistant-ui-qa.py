@@ -208,6 +208,24 @@ with sync_playwright() as p:
     assert page.evaluate("sessionStorage.getItem('xiaozhi-tavily-key:qa-user')") is None
     page.get_by_role('button', name='界面外观', exact=True).click()
     page.get_by_role('dialog', name='设置').get_by_text('配色方案', exact=True).wait_for()
+    size = page.get_by_role('spinbutton', name='字号（像素）')
+    slider = page.get_by_role('slider', name='字号滑块')
+    for n in ('1', '48', '22'):
+        size.fill(n)
+        size.press('Tab')
+        assert slider.input_value() == n
+        assert main.locator('textarea').evaluate('el => getComputedStyle(el).fontSize') == n + 'px'
+    slider.focus()
+    slider.press('ArrowRight')
+    assert size.input_value() == '23'
+    page.get_by_role('combobox', name='中文字体').select_option('楷体')
+    page.get_by_role('combobox', name='英文字体').select_option('Times New Roman')
+    fonts = main.locator('textarea').evaluate('el => getComputedStyle(el).fontFamily')
+    assert 'Times New Roman' in fonts and 'KaiTi' in fonts
+    assert not page.get_by_text('消息版式', exact=True).count()
+    page.get_by_role('button', name='恢复默认').click()
+    assert size.input_value() == '16'
+
     page.get_by_role('button', name='关闭', exact=True).click()
 
     connections = []

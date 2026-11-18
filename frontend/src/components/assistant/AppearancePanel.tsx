@@ -1,12 +1,10 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { RotateCcw, Upload } from 'lucide-react';
 import {
   COLOR_PRESETS,
   type Appearance,
-  type FontSize,
+  CHINESE_FONTS, ENGLISH_FONTS, DEFAULT_APPEARANCE,
   type Radius,
-  type FontFamily,
-  type MessageStyle,
   type ChatWidth,
   type SidebarSide,
 } from '@/lib/appearance';
@@ -21,24 +19,10 @@ interface Props {
   onChange: (a: Appearance) => void;
 }
 
-const FONT_OPTIONS: { id: FontSize; name: string }[] = [
-  { id: 'compact', name: '紧凑' },
-  { id: 'standard', name: '标准' },
-  { id: 'spacious', name: '宽松' },
-];
 const RADIUS_OPTIONS: { id: Radius; name: string }[] = [
   { id: 'square', name: '直角' },
   { id: 'round', name: '圆润' },
   { id: 'pill', name: '胶囊' },
-];
-const FONT_FAMILY_OPTIONS: { id: FontFamily; name: string }[] = [
-  { id: 'sans', name: '现代无衬线' },
-  { id: 'serif', name: '公文衬线' },
-  { id: 'mono', name: '等宽代码' },
-];
-const MESSAGE_STYLE_OPTIONS: { id: MessageStyle; name: string }[] = [
-  { id: 'bubble', name: '气泡式' },
-  { id: 'doc', name: '文档式' },
 ];
 const CHAT_WIDTH_OPTIONS: { id: ChatWidth; name: string }[] = [
   { id: 'narrow', name: '窄' },
@@ -53,6 +37,14 @@ const SIDEBAR_OPTIONS: { id: SidebarSide; name: string }[] = [
 export function AppearancePanel({ value, onChange }: Props) {
   function set(patch: Partial<Appearance>) {
     onChange({ ...value, ...patch });
+  }
+
+  const [typedSize, setTypedSize] = useState<string | null>(null);
+  function commitSize() {
+    if (typedSize && Number.isFinite(Number(typedSize))) {
+      set({ fontSize: Math.max(1, Math.min(48, Math.round(Number(typedSize)))) });
+    }
+    setTypedSize(null);
   }
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -152,11 +144,16 @@ export function AppearancePanel({ value, onChange }: Props) {
 
     {/* 字号 */}
     <Section title="字号">
-      <Segmented
-        options={FONT_OPTIONS}
-        value={value.font}
-        onPick={(id) => set({ font: id as FontSize })}
-      />
+      <div className="flex items-center gap-3">
+        <input aria-label="字号滑块" className="min-w-0 flex-1 accent-primary" type="range" min={1} max={48} step={1}
+          value={value.fontSize} onChange={e => { setTypedSize(null); set({ fontSize: Number(e.target.value) }); }} />
+        <input aria-label="字号（像素）" type="number" min={1} max={48} step={1} className="w-16 rounded-md border bg-background px-2 py-1 text-sm"
+          value={typedSize ?? value.fontSize} onChange={e => {
+            setTypedSize(e.target.value);
+            const n = e.target.valueAsNumber;
+            if (Number.isInteger(n) && n >= 1 && n <= 48) set({ fontSize: n });
+          }} onBlur={commitSize} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+      </div>
     </Section>
 
     {/* 圆角 */}
@@ -172,26 +169,19 @@ export function AppearancePanel({ value, onChange }: Props) {
       <p className="mb-2 text-[0.74rem] font-medium text-muted-foreground">排版布局</p>
     </div>
 
-    {/* 字体风格 */}
-    <Section title="字体风格">
-      <Segmented
-        options={FONT_FAMILY_OPTIONS}
-        value={value.fontFamily}
-        onPick={(id) => set({ fontFamily: id as FontFamily })}
-      />
-    </Section>
-
-    {/* 消息版式 */}
-    <Section title="消息版式">
-      <Segmented
-        options={MESSAGE_STYLE_OPTIONS}
-        value={value.messageStyle}
-        onPick={(id) => set({ messageStyle: id as MessageStyle })}
-      />
-      <p className="mt-1.5 text-[0.7rem] leading-relaxed text-muted-foreground">
-        文档式：消息以全宽段落呈现，更接近律师阅卷/写报告的版式。
-      </p>
-    </Section>
+    <div className="grid grid-cols-2 gap-3">
+      {(['chineseFont', 'englishFont'] as const).map(key => (
+        <label key={key} className="min-w-0 text-sm">
+          {key === 'chineseFont' ? '中文字体' : '英文字体'}
+          <select className="mt-1.5 w-full rounded-md border border-border bg-background px-2 py-2"
+            style={{ fontFamily: '"' + value[key] + '"' }} value={value[key]}
+            onChange={e => set({ [key]: e.target.value })}>
+            {(key === 'chineseFont' ? CHINESE_FONTS : ENGLISH_FONTS).map(name =>
+              <option key={name} value={name} style={{ fontFamily: '"' + name + '"' }}>{name}</option>)}
+          </select>
+        </label>
+      ))}
+    </div>
 
     {/* 内容宽度 */}
     <Section title="内容宽度">
@@ -212,21 +202,7 @@ export function AppearancePanel({ value, onChange }: Props) {
     </Section>
     <div className="flex items-center gap-2 border-t border-border pt-3">
       <button
-        onClick={() =>
-          onChange({
-            preset: 'blue',
-            customColor: '#2563eb',
-            mode: 'system',
-            dark: false,
-            font: 'standard',
-            radius: 'round',
-            fontFamily: 'sans',
-            messageStyle: 'bubble',
-            chatWidth: 'standard',
-            sidebarSide: 'left',
-            avatar: '/xiaomei-avatar.png',
-          })
-        }
+        onClick={() => { setTypedSize(null); onChange({ ...DEFAULT_APPEARANCE }); }}
         className="flex items-center gap-1 rounded-md px-3 py-1.5 text-[0.8rem] text-muted-foreground hover:bg-muted"
       >
         <RotateCcw className="h-3.5 w-3.5" /> 恢复默认

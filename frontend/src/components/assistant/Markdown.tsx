@@ -10,16 +10,16 @@ import type { Components } from 'react-markdown';
  */
 const components: Components = {
   h1: ({ children }) => (
-    <h1 className="mb-2 mt-3 text-xl font-bold leading-snug">{children}</h1>
+    <h1 className="mb-2 mt-3 text-[1.25em] font-bold leading-snug">{children}</h1>
   ),
   h2: ({ children }) => (
-    <h2 className="mb-1.5 mt-3 text-lg font-semibold leading-snug">{children}</h2>
+    <h2 className="mb-1.5 mt-3 text-[1.125em] font-semibold leading-snug">{children}</h2>
   ),
   h3: ({ children }) => (
-    <h3 className="mb-1 mt-2.5 text-base font-semibold leading-snug">{children}</h3>
+    <h3 className="mb-1 mt-2.5 text-[1em] font-semibold leading-snug">{children}</h3>
   ),
   h4: ({ children }) => (
-    <h4 className="mb-1 mt-2 text-sm font-semibold">{children}</h4>
+    <h4 className="mb-1 mt-2 text-[0.9em] font-semibold">{children}</h4>
   ),
   p: ({ children }) => <p className="my-1.5 leading-relaxed">{children}</p>,
   a: ({ children, href }) => (
@@ -40,7 +40,7 @@ const components: Components = {
   ),
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
   blockquote: ({ children }) => (
-    <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-sm text-muted-foreground">
+    <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-[0.9em] text-muted-foreground">
       {children}
     </blockquote>
   ),
@@ -49,7 +49,7 @@ const components: Components = {
   em: ({ children }) => <em className="italic">{children}</em>,
   table: ({ children }) => (
     <div className="my-2 overflow-x-auto">
-      <table className="w-full border-collapse text-sm">{children}</table>
+      <table className="w-full border-collapse text-[0.9em]">{children}</table>
     </div>
   ),
   thead: ({ children }) => <thead className="bg-muted">{children}</thead>,
@@ -58,7 +58,7 @@ const components: Components = {
   ),
   td: ({ children }) => <td className="border border-border px-2.5 py-1.5">{children}</td>,
   pre: ({ children }) => (
-    <pre className="my-2 overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[0.82rem] leading-relaxed">
+    <pre className="my-2 overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[0.9em] leading-relaxed">
       {children}
     </pre>
   ),
@@ -84,7 +84,7 @@ const components: Components = {
 
 export function Markdown({ content }: { content: string }) {
   return (
-    <div className="text-[0.95rem] leading-relaxed">
+    <div className="text-[length:var(--font-size-body)] leading-relaxed">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>

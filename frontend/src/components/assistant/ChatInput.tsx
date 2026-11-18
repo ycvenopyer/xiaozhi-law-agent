@@ -134,7 +134,7 @@ export function ChatInput(props: Props) {
             onKeyDown={handleKey}
             rows={2}
             placeholder="描述你的问题，或上传材料让小知帮你分析…"
-            className="max-h-40 min-h-[3rem] w-full resize-none bg-transparent px-1 py-2 text-[0.95rem] outline-none placeholder:text-muted-foreground"
+            className="max-h-40 min-h-[3rem] w-full resize-none bg-transparent px-1 py-2 text-[length:var(--font-size-body)] outline-none placeholder:text-muted-foreground"
           />
         </div>
         <div className="flex items-center justify-end gap-2 px-3 pb-3">

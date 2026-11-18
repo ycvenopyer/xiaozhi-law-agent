@@ -304,6 +304,7 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-family-base);
+    font-size: var(--font-size-body);
     min-height: 100vh;
   }
 }
@@ -436,35 +437,4 @@
   --ring: oklch(0.62 0.15 250);
   --hero: oklch(0.3 0.04 250);
   --hero-foreground: oklch(0.96 0.01 250);
-}
-
-/* ================================================================
-   文档式排版（外观 → 排版布局 → 消息版式 = 文档式）
-   消息以全宽段落呈现，去掉气泡背景，更接近律师阅卷 / 写报告版式。
-   ================================================================ */
-html.layout-doc .msg-assistant {
-  display: block;
-}
-html.layout-doc .msg-assistant > div:first-child {
-  display: none;
-}
-html.layout-doc .msg-assistant > div:nth-child(2) {
-  max-width: 100%;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border);
-}
-html.layout-doc .msg-user {
-  justify-content: flex-start;
-}
-html.layout-doc .msg-user > div {
-  background: transparent;
-  color: var(--foreground);
-  max-width: 100%;
-  border: none;
-  border-bottom: 1px dashed var(--border);
-  padding: 1rem 0;
-  box-shadow: none;
-}
-html.layout-doc .msg-user > div p {
-  color: var(--foreground);
 }

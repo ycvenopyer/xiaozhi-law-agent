@@ -242,8 +242,12 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
         </header>
         {dialog === 'help' ? <div className="space-y-4 overflow-y-auto p-5 text-sm leading-6">
           <div><h3 className="font-medium">开始对话</h3><p className="text-muted-foreground">在设置里授权第三方模型处理，然后从输入框选择模型。检索法条和案例时，可通过知识库或普通附件提供参考材料。</p></div>
+          <div><h3 className="font-medium">从材料开始办案</h3><p className="text-muted-foreground">点击对话框的「上传文件填表」，选择 PDF、Word、TXT、Markdown 或图片，再选择用途。检索对比适合比较两份材料，侵权识别用于梳理权利基础和被诉行为，合规提示用于检查研发或合同风险，知产文书用于起草协议。导入会替换所选功能的草稿，请先核对字段再生成报告。</p></div>
+          <div><h3 className="font-medium">图片和扫描件</h3><p className="text-muted-foreground">文字版 PDF 可直接提取正文。照片和扫描页需在输入框选择支持图片的模型。每个文件最多 4 MiB，每次填表合计最多 4 万字和 8 张图片或扫描页。</p></div>
+          <div><h3 className="font-medium">核对法律依据</h3><p className="text-muted-foreground">从右上角打开知识库，选择本次使用的材料。阅读报告时，可沿来源链接核对法规版本、施行日期和引用原文。报告中的待补充事项可作为下一轮提问的起点。</p></div>
           <div><h3 className="font-medium">配置自己的模型</h3><p className="text-muted-foreground">从模型菜单打开「自定义模型」，填写厂商、接口地址、模型 ID 和 API Key，可先测试连通性。</p></div>
-          <div><h3 className="font-medium">检索今日知产新闻</h3><p className="text-muted-foreground">在「设置 → 联网搜索」保存 Tavily API Key，然后到事务台检索当天的知产动态。</p></div>
+          <div><h3 className="font-medium">检索今日知产新闻</h3><p className="text-muted-foreground">在「设置 → 联网搜索」保存 Tavily API Key，支持工具调用的模型即可在对话中检索网页，也可以到事务台检索当天的知产动态。搜索使用你的 Tavily 额度。</p></div>
+          <div><h3 className="font-medium">调整阅读外观</h3><p className="text-muted-foreground">进入「设置 → 界面外观」，拖动字号滑块或直接输入 1–48 的整数。中文和英文可分别选择字体，设置保存在当前浏览器。</p></div>
           <div><h3 className="font-medium">下载已保存的附件</h3><p className="text-muted-foreground">在「设置 → 账号与隐私」中下载当前账号已保存的文件原件。</p></div>
         </div> : <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[9rem_minmax(0,1fr)] sm:grid-rows-1">
           <nav aria-label="设置分类" hidden={guiding} className={guiding ? 'hidden' : "grid grid-cols-2 gap-1 border-b border-border bg-muted/30 p-2 sm:flex sm:flex-col sm:border-b-0 sm:border-r"}>

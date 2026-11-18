@@ -4,10 +4,16 @@
  * is instant and persists in localStorage.
  */
 
-export type FontSize = 'compact' | 'standard' | 'spacious';
+export const CHINESE_FONTS = ['微软雅黑', '黑体', '宋体', '楷体', '等线'] as const;
+export const ENGLISH_FONTS = ['Arial', 'Times New Roman', 'Calibri', 'Cascadia Code'] as const;
+const chineseFamilies = {
+  微软雅黑: '"Microsoft YaHei", "微软雅黑", "PingFang SC", sans-serif',
+  黑体: 'SimHei, "黑体", "Heiti SC", sans-serif',
+  宋体: 'SimSun, "宋体", "Songti SC", serif',
+  楷体: 'KaiTi, "楷体", "Kaiti SC", serif',
+  等线: 'DengXian, "等线", sans-serif',
+};
 export type Radius = 'square' | 'round' | 'pill';
-export type FontFamily = 'sans' | 'serif' | 'mono';
-export type MessageStyle = 'bubble' | 'doc';
 export type ChatWidth = 'narrow' | 'standard' | 'wide';
 export type SidebarSide = 'left' | 'right';
 
@@ -21,12 +27,10 @@ export interface Appearance {
   /** Legacy: resolved dark flag (derived from mode + system preference). Kept
    *  for backwards compat with previously persisted settings. */
   dark: boolean;
-  font: FontSize;
+  fontSize: number;
   radius: Radius;
-  /** Base typeface: modern sans / serif (like official documents) / monospace. */
-  fontFamily: FontFamily;
-  /** Chat layout: chat bubbles vs. document-style (full-width paragraphs). */
-  messageStyle: MessageStyle;
+  chineseFont: typeof CHINESE_FONTS[number];
+  englishFont: typeof ENGLISH_FONTS[number];
   /** Reading column width for the conversation area. */
   chatWidth: ChatWidth;
   /** Where the session sidebar sits. */
@@ -50,7 +54,7 @@ export const COLOR_PRESETS: ColorPreset[] = [
   { id: 'teal', name: '青碧', hex: '#0d9488' },
 ];
 
-const DEFAULT: Appearance = {
+export const DEFAULT_APPEARANCE: Appearance = {
   preset: 'blue',
   customColor: '#2563eb',
   // First-time visitors default to LIGHT so a dark-mode OS preference doesn't
@@ -59,10 +63,10 @@ const DEFAULT: Appearance = {
   mode: 'light',
   // Resolved dark flag (filled in by loadAppearance below).
   dark: false,
-  font: 'standard',
+  fontSize: 16,
   radius: 'round',
-  fontFamily: 'sans',
-  messageStyle: 'bubble',
+  chineseFont: '微软雅黑',
+  englishFont: 'Arial',
   chatWidth: 'standard',
   sidebarSide: 'left',
   avatar: '/xiaomei-avatar.png',
@@ -81,22 +85,10 @@ export function isDarkMode(a: Appearance): boolean {
   return prefersDark();
 }
 
-const FONT_SCALE: Record<FontSize, { body: string; label: string; small: string }> = {
-  compact: { body: '0.9rem', label: '0.8rem', small: '0.72rem' },
-  standard: { body: '1rem', label: '0.875rem', small: '0.75rem' },
-  spacious: { body: '1.12rem', label: '0.95rem', small: '0.82rem' },
-};
-
 const RADIUS_VALUE: Record<Radius, string> = {
   square: '0rem',
   round: '0.625rem',
   pill: '1.25rem',
-};
-
-const FONT_FAMILY_STACK: Record<FontFamily, string> = {
-  sans: 'system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif',
-  serif: 'Georgia, "Songti SC", "SimSun", "Noto Serif SC", "Source Han Serif SC", serif',
-  mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
 };
 
 const CHAT_WIDTH: Record<ChatWidth, string> = {
@@ -106,17 +98,19 @@ const CHAT_WIDTH: Record<ChatWidth, string> = {
 };
 
 export function loadAppearance(): Appearance {
-  if (typeof localStorage === 'undefined') return { ...DEFAULT };
+  if (typeof localStorage === 'undefined') return { ...DEFAULT_APPEARANCE };
   try {
     const raw = localStorage.getItem('agent-appearance');
-    if (!raw) return { ...DEFAULT };
-    const parsed = JSON.parse(raw) as Partial<Appearance>;
-    // Older saves used `dark: boolean` with no `mode` field. Migrate them
-    // to the new 'light'/'dark'/'system' mode so the UI keeps working.
-    const merged: Appearance = { ...DEFAULT, ...parsed };
-    if (!merged.mode) {
-      merged.mode = merged.dark ? 'dark' : 'light';
-    }
+    if (!raw) return { ...DEFAULT_APPEARANCE };
+    const { font, fontFamily, ...saved } = JSON.parse(raw);
+    delete saved.messageStyle;
+    const merged: Appearance = { ...DEFAULT_APPEARANCE, ...saved };
+    const legacySize = font === 'compact' ? 14 : font === 'spacious' ? 18 : 16;
+    merged.fontSize = Number.isFinite(saved.fontSize)
+      ? Math.min(48, Math.max(1, Math.round(saved.fontSize))) : legacySize;
+    if (!CHINESE_FONTS.includes(saved.chineseFont)) merged.chineseFont = fontFamily === 'serif' ? '宋体' : DEFAULT_APPEARANCE.chineseFont;
+    if (!ENGLISH_FONTS.includes(saved.englishFont)) merged.englishFont = fontFamily === 'mono' ? 'Cascadia Code' : fontFamily === 'serif' ? 'Times New Roman' : DEFAULT_APPEARANCE.englishFont;
+    if (!saved.mode && saved.dark) merged.mode = 'dark';
     // Always resolve the live dark flag from the mode + OS preference.
     merged.dark = isDarkMode(merged);
     return merged;
@@ -128,7 +122,7 @@ export function loadAppearance(): Appearance {
     } catch {
       /* ignore */
     }
-    return { ...DEFAULT };
+    return { ...DEFAULT_APPEARANCE };
   }
 }
 
@@ -162,7 +156,7 @@ function contrastFg(hex: string): string {
 
 function accentHex(a: Appearance): string {
   if (a.preset === 'custom') return a.customColor;
-  return COLOR_PRESETS.find((p) => p.id === a.preset)?.hex ?? DEFAULT.customColor;
+  return COLOR_PRESETS.find((p) => p.id === a.preset)?.hex ?? DEFAULT_APPEARANCE.customColor;
 }
 
 export function applyAppearance(a: Appearance): void {
@@ -186,16 +180,11 @@ export function applyAppearance(a: Appearance): void {
   const resolvedDark = isDarkMode(a);
   root.classList.toggle('dark', resolvedDark);
 
-  const fs = FONT_SCALE[a.font];
-  root.style.setProperty('--font-size-body', fs.body);
-  root.style.setProperty('--font-size-label', fs.label);
-  root.style.setProperty('--font-size-small', fs.small);
-
+  root.style.setProperty('--font-size-body', a.fontSize + 'px');
   root.style.setProperty('--radius', RADIUS_VALUE[a.radius]);
 
-  root.style.setProperty('--font-family-base', FONT_FAMILY_STACK[a.fontFamily]);
+  root.style.setProperty('--font-family-base', `"${a.englishFont}", ${chineseFamilies[a.chineseFont]}`);
   root.style.setProperty('--chat-max-width', CHAT_WIDTH[a.chatWidth]);
-  root.classList.toggle('layout-doc', a.messageStyle === 'doc');
 
   // Mark the html element with the active mode so CSS / external integrations
   // can react (e.g. native form widgets, scrollbars).
