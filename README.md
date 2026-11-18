@@ -41,7 +41,7 @@ Browser UI → Express API → system prompt + dossier + knowledge + conversatio
                          feed results back → SSE response
 ```
 
-No database, Redis, vector store, CloudBase account, or GPU is required for the core local app. Knowledge and dossier text are injected into the prompt; this is not a vector-search RAG pipeline. MCP servers and dynamically loaded Skills are not currently supported.
+No database, Redis, vector store, CloudBase account, or GPU is required for the core local app. Knowledge and dossier text are injected into the prompt; this is not a vector-search RAG pipeline. MCP servers are not currently supported.
 
 **Local deployment runs the web app and agent backend on your computer. Model inference still uses external APIs.** Submitted material is sent to the selected model provider, and research queries go to the configured search service. Browser data is tied to its origin/profile and can be lost when site data is cleared; changing ports also changes the storage origin.
 
@@ -187,7 +187,7 @@ All backend settings go in `backend/.env`; shell environment variables take prec
 | `LLM_MAX_TOKENS` | Default `2000`. |
 | `WEB_DIST` | Optional path to built frontend assets; defaults to `frontend/dist`. |
 
-Statute research, case research, IP news summaries and contract drafting/review are built-in Skills. Select one in the UI, use `/skills` or a `$skill-name` mention, or let the model load one on demand. Instructions live in `agent-skills/*/SKILL.md`; see [Skills development](docs/skills.md). Public-web search is not provided. Research uses supplied materials and the knowledge base; news summaries require source text. Verify trademark registration details through official sources. Image analysis requires a registered vision-capable model. To add another OpenAI-compatible endpoint, update `providers.ts`; generic `LLM_*` settings alone do not register it.
+Statute research, case research and contract drafting/review are available in the chat composer. IP news summaries are in the Workbench. Research forms support filters; contracts support type selection and pasted or uploaded text. Public-web search is not provided. Research uses supplied materials and the knowledge base; news summaries require pasted source text. All model calls require the account's external-processing consent. Verify trademark registration details through official sources. Image analysis requires a registered vision-capable model. To add another OpenAI-compatible endpoint, update `providers.ts`; generic `LLM_*` settings alone do not register it.
 
 ## Usage
 

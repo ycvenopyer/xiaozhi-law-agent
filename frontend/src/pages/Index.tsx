@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BookOpen, FolderOpen } from 'lucide-react';
+import { BookOpen, FolderOpen, PanelLeftOpen, ChevronRight } from 'lucide-react';
 import { Sidebar } from '@/components/assistant/Sidebar';
+import { ProjectOverview } from '@/components/assistant/ProjectOverview';
 import { MessageList } from '@/components/assistant/MessageList';
-import { ChatInput } from '@/components/assistant/ChatInput';
+import { ChatInput, type RetrieveMode } from '@/components/assistant/ChatInput';
 import { EmptyState } from '@/components/assistant/EmptyState';
 import { KnowledgePanel } from '@/components/assistant/KnowledgePanel';
 import { streamChat, uploadFile, extractDossier } from '@/lib/agent-client';
 import { loadSessions, saveSessions, newSessionId } from '@/lib/sessions';
+import { loadProjects, saveProjects } from '@/lib/projects';
 import {
   loadDossiers,
   saveDossiers,
@@ -18,8 +20,7 @@ import { loadKB, saveKB, kbToText, type KBEntry } from '@/lib/knowledge';
 import { CaseDossier } from '@/components/assistant/CaseDossier';
 import { AppearancePanel } from '@/components/assistant/AppearancePanel';
 import { Workbench } from '@/components/assistant/Workbench';
-import { SkillPanel } from '@/components/assistant/SkillPanel';
-import { findSkill, prepareSkill, type PreparedSkill, type SkillId, type SkillInfo } from '@/lib/skills';
+import { ContractPanel } from '@/components/assistant/ContractPanel';
 import { loadAppearance, applyAppearance, watchSystemTheme, isDarkMode, type Appearance } from '@/lib/appearance';
 import type {
   AgentEvent,
@@ -28,6 +29,7 @@ import type {
   Session,
   ToolCallView,
   ModelInfo,
+  Project,
   CaseDossier as Dossier,
 } from '@/types/agent';
 import { DOSSIER_CAUSES, EMPTY_DOSSIER, IMAGE_DOSSIER_RAW } from '@/types/agent';
@@ -43,6 +45,11 @@ function makeMsg(role: ChatMessage['role'], content = ''): ChatMessage {
 function firstLine(text: string): string {
   const t = text.trim().replace(/\s+/g, ' ');
   return t.length > 22 ? t.slice(0, 22) + '…' : t || '新对话';
+}
+
+function emptySession(projectId?: string): Session {
+  const now = Date.now();
+  return { id: newSessionId(), title: '新对话', messages: [], createdAt: now, updatedAt: now, projectId };
 }
 
 /**
@@ -151,13 +158,17 @@ function heuristicExtract(text: string): Record<string, string> {
 
 export default function Index() {
   const [initial] = useState(() => {
-    const history = loadSessions().filter(session => session.messages.length > 0);
-    const last = loadCollection<{ id: string; conversationId?: string }>('settings').find(item => item.id === 'current-conversation');
-    if (last?.conversationId && history.some(session => session.id === last.conversationId)) return { sessions: history, currentId: last.conversationId };
-    const fresh: Session = { id: newSessionId(), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
-    return { sessions: [fresh, ...history], currentId: fresh.id };
+    const history = loadSessions();
+    const projects = loadProjects();
+    const last = loadCollection<{ id: string; conversationId?: string; projectViewId?: string }>('settings').find(item => item.id === 'current-conversation');
+    const active = history.find(session => session.id === last?.conversationId) || history[0] || emptySession();
+    return { sessions: history.length ? history : [active], currentId: active.id, projects,
+      projectViewId: projects.some(project => project.id === last?.projectViewId) ? last!.projectViewId! : null };
   });
   const [sessions, setSessions] = useState<Session[]>(initial.sessions);
+  const [projects, setProjects] = useState<Project[]>(initial.projects);
+  const [projectViewId, setProjectViewId] = useState<string | null>(initial.projectViewId);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.matchMedia('(min-width: 768px)').matches);
   const [currentId, setCurrentId] = useState(initial.currentId);
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<AttachedFile[]>([]);
@@ -180,11 +191,7 @@ export default function Index() {
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
-  const [selectedSkill, setSelectedSkill] = useState<SkillId | undefined>();
-  const [preparedSkill, setPreparedSkill] = useState<PreparedSkill | null>(null);
-  const [skillError, setSkillError] = useState('');
-  const skillAbortRef = useRef<AbortController | null>(null);
+  const [contractOpen, setContractOpen] = useState(false);
   const [dossierBusy, setDossierBusy] = useState(false);
   const [library, setLibrary] = useState<SavedDossier[]>(() => loadDossiers());
   const modelName = models.find(model => model.id === selectedModel)?.label || selectedModel;
@@ -222,6 +229,13 @@ export default function Index() {
     return () => controller.abort();
   }, [loadModels]);
 
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 768px)');
+    const update = (event: MediaQueryListEvent) => setSidebarOpen(event.matches);
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+
   // Persist the chosen model and keep the sidebar label in sync.
   useEffect(() => {
     localStorage.setItem('agent-model', selectedModel);
@@ -230,15 +244,17 @@ export default function Index() {
   // Persist whenever sessions change.
   useEffect(() => {
     if (sessions.length) stageRecovery('sessions', sessions);
-    if (sessions.length && !streaming) saveSessions(sessions);
+    if (!streaming) saveSessions(sessions);
   }, [sessions, streaming]);
+
+  useEffect(() => { saveProjects(projects); }, [projects]);
 
   useEffect(() => {
     if (!currentId) return;
-    void saveCollection('settings', [{ id: 'current-conversation', conversationId: currentId }], false).catch(() => {});
-  }, [currentId]);
+    void saveCollection('settings', [{ id: 'current-conversation', conversationId: currentId, projectViewId }], false).catch(() => {});
+  }, [currentId, projectViewId]);
 
-  useEffect(() => () => { abortRef.current?.abort(); skillAbortRef.current?.abort(); }, []);
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   // Apply the saved appearance on load and re-apply whenever it changes.
   // Also re-apply on OS color-scheme change when the user picked 'system'.
@@ -280,6 +296,21 @@ export default function Index() {
   }, [library]);
 
   const current = sessions.find((s) => s.id === currentId) || null;
+  const viewedProject = projects.find(project => project.id === projectViewId);
+  const currentProject = viewedProject || projects.find(project => project.id === current?.projectId);
+  const workspaceBusy = streaming || dossierBusy;
+
+  function closeMobileSidebar() { if (window.matchMedia('(max-width: 767px)').matches) setSidebarOpen(false); }
+
+  function selectConversation(id: string) {
+    if (workspaceBusy) return;
+    setCurrentId(id); setProjectViewId(null); closeMobileSidebar();
+  }
+
+  function openProject(id: string) {
+    if (workspaceBusy || !projects.some(project => project.id === id)) return;
+    setProjectViewId(id); closeMobileSidebar();
+  }
 
   const updateCurrent = useCallback(
     (updater: (s: Session) => Session) => {
@@ -288,33 +319,59 @@ export default function Index() {
     [currentId]
   );
 
-  const newChat = useCallback(() => {
-    const s: Session = {
-      id: newSessionId(),
-      title: '新对话',
-      messages: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
+  function newChat(projectId?: string) {
+    if (workspaceBusy) return;
+    const s = emptySession(projectId && projects.some(project => project.id === projectId) ? projectId : undefined);
     setSessions((prev) => [s, ...prev]);
-    setCurrentId(s.id);
+    setCurrentId(s.id); setProjectViewId(null);
     setFiles([]);
     setInput('');
-  }, []);
+    closeMobileSidebar();
+  }
 
-  const deleteSession = useCallback(
-    (id: string) => {
-      setSessions((prev) => {
-        const next = prev.filter((s) => s.id !== id);
-        if (id === currentId) {
-          const fallback = next[0];
-          setCurrentId(fallback ? fallback.id : '');
-        }
-        return next;
-      });
-    },
-    [currentId]
-  );
+  function deleteSession(id: string) {
+    if (workspaceBusy) return;
+    const next = sessions.filter(session => session.id !== id);
+    if (!next.length) next.push(emptySession());
+    setSessions(next);
+    if (id === currentId) { setCurrentId(next[0].id); setInput(''); setFiles([]); }
+  }
+
+  function renameSession(id: string, title: string) {
+    if (workspaceBusy || !title.trim()) return;
+    setSessions(previous => previous.map(session => session.id === id ? { ...session, title: title.trim().slice(0,80), titleEdited: true, updatedAt: Date.now() } : session));
+  }
+
+  function pinSession(id: string) {
+    if (workspaceBusy) return;
+    setSessions(previous => previous.map(session => session.id === id ? { ...session, pinnedAt: session.pinnedAt ? undefined : Date.now() } : session));
+  }
+
+  function moveSession(id: string, projectId?: string) {
+    if (workspaceBusy || (projectId && !projects.some(project => project.id === projectId))) return;
+    setSessions(previous => previous.map(session => session.id === id ? { ...session, projectId, updatedAt: Date.now() } : session));
+  }
+
+  function createProject(name: string, sessionId?: string): string {
+    const now = Date.now();
+    const project: Project = { id: crypto.randomUUID(), name: name.trim().slice(0,80), createdAt: now, updatedAt: now };
+    setProjects(previous => [...previous, project]);
+    if (sessionId) setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, projectId: project.id, updatedAt: now } : session));
+    setProjectViewId(project.id); closeMobileSidebar();
+    return project.id;
+  }
+
+  function renameProject(id: string, name: string) {
+    if (workspaceBusy || !name.trim()) return;
+    setProjects(previous => previous.map(project => project.id === id ? { ...project, name: name.trim().slice(0,80), updatedAt: Date.now() } : project));
+  }
+
+  function deleteProject(id: string) {
+    if (workspaceBusy) return;
+    setProjects(previous => previous.filter(project => project.id !== id));
+    setSessions(previous => previous.map(session => session.projectId === id ? { ...session, projectId: undefined, updatedAt: Date.now() } : session));
+    if (projectViewId === id) setProjectViewId(null);
+  }
 
   const handleFiles = useCallback(async (list: FileList) => {
     const added: AttachedFile[] = [];
@@ -507,13 +564,11 @@ export default function Index() {
   }, [current, dossierBusy, handleDossierUpload]);
 
   const submit = useCallback(
-    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[], skillId?: string, skillVersion?: string) => {
+    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[]) => {
       if ((!text.trim() && !attachFiles.length) || streaming || !current) return;
       if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
 
       const userMsg: ChatMessage = makeMsg('user', text);
-      if (skillId) userMsg.skillId = skillId;
-      if (skillVersion) userMsg.skillVersion = skillVersion;
       if (attachFiles.length) userMsg.files = attachFiles;
       const assistantMsg: ChatMessage = makeMsg('assistant');
       assistantMsg.status = 'generating';
@@ -522,7 +577,7 @@ export default function Index() {
 
       const nextSession: Session = {
         ...current,
-        title: isFirst ? firstLine(text) : current.title,
+        title: isFirst && !current.titleEdited ? firstLine(text) : current.title,
         messages: [...(baseHistory ?? current.messages), userMsg, assistantMsg],
         updatedAt: Date.now(),
       };
@@ -548,8 +603,6 @@ export default function Index() {
           dossier: current!.dossier ? dossierToText(current!.dossier) : '',
           conversationId: current.id,
           assistantMessageId: assistantMsg.id,
-          skillId,
-          skillVersion,
         })) {
           applyEvent(ev);
         }
@@ -570,10 +623,6 @@ export default function Index() {
 
       function applyEvent(ev: AgentEvent) {
         switch (ev.type) {
-          case 'skill':
-            updateCurrent(session => ({ ...session, messages: session.messages.map(message => message.id === assistantMsg.id
-              ? { ...message, skillIds: [...new Set([...(message.skillIds || []), ev.id])] } : message) }));
-            break;
           case 'token':
             acc += ev.content;
             updateCurrent((s) => ({
@@ -639,41 +688,27 @@ export default function Index() {
   const handleSend = useCallback(() => {
     const text = input.trim();
     if ((!text && files.length === 0) || streaming) return;
-    if (text === '/skills') { setSkillsOpen(true); setInput(''); return; }
     if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
-    const mention = text.match(/^\$([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/)?.[1];
-    if (mention && !findSkill(mention)) { showNote('没有找到这个 Skill，请从 Skills 面板选择。'); return; }
-    if (selectedSkill && preparedSkill?.id !== selectedSkill) { showNote(skillError || '技能提示词正在加载，请稍候。'); return; }
-    const skillId = selectedSkill || mention;
-    const version = selectedSkill ? preparedSkill?.version : findSkill(mention)?.version;
-    submit(text, files, undefined, skillId, version);
+    submit(text, files);
     setInput('');
     setFiles([]);
-    setSelectedSkill(undefined);
-    setPreparedSkill(null); setSkillError('');
-  }, [input, files, streaming, submit, selectedSkill, preparedSkill, skillError]);
+  }, [input, files, streaming, submit]);
 
-  async function pickSkill(skill: SkillInfo) {
-    skillAbortRef.current?.abort();
-    const controller = new AbortController(); skillAbortRef.current = controller;
-    setSelectedSkill(skill.id);
-    setPreparedSkill(null); setSkillError('');
-    const mention = input.trimStart().match(/^\$([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/)?.[1];
-    if (mention && findSkill(mention)) setInput(input.replace(/^\s*\$[a-z0-9-]+\s*/, ''));
-    setSkillsOpen(false);
-    try {
-      const skillContext = await prepareSkill(skill.id, skill.version, controller.signal);
-      if (!controller.signal.aborted) setPreparedSkill(skillContext);
-    } catch (error) {
-      if (!controller.signal.aborted) setSkillError(error instanceof Error ? error.message : '技能提示词加载失败，请重试。');
-    }
-  }
-
-  function clearSkill() {
-    skillAbortRef.current?.abort();
-    setSelectedSkill(undefined);
-    setPreparedSkill(null); setSkillError('');
-  }
+  const handleRetrieve = useCallback((mode: RetrieveMode, payload: Parameters<React.ComponentProps<typeof ChatInput>['onRetrieve']>[1]) => {
+    const fields = mode === 'law'
+      ? [['关键词', payload.keyword], ['法典名称', payload.code], ['条文序号', payload.article]]
+      : [['关键词', payload.keyword], ['案由', payload.cause], ['案件类型', payload.caseType], ['审理程序', payload.procedure], ['法院层级', payload.courtLevel], ['年份', payload.year]];
+    const conditions = fields.filter(([, value]) => value).map(([name, value]) => `${name}：${value}`).join('\n');
+    const task = mode === 'law'
+      ? '请根据下列条件，从本次提供的知识库、卷宗和附件中检索相关法条，列出法律名称、条文序号、材料中的原文及适用要点。'
+      : '请根据下列条件，从本次提供的知识库、卷宗和附件中检索类似案例，列出材料中的案号、法院、关键事实、争议焦点、裁判理由，以及与本案的异同。';
+    const detail = payload.depth === 'deep'
+      ? '请逐项分析，说明匹配与不匹配的条件、证据来源和需要补充核实的信息。'
+      : '请优先列出最相关的结果，简要说明理由。';
+    if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
+    void submit(`${task}\n${conditions}\n${detail}\n当前不提供网页搜索。仅引用所提供材料中实际存在的条文、案号和链接；没有匹配资料时明确说明，并给出后续人工核验的方向。`, files);
+    setFiles([]);
+  }, [files, submit]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -698,7 +733,7 @@ export default function Index() {
         messages: s.messages.slice(0, userIdx),
         updatedAt: Date.now(),
       }));
-      submit(userMsg.content, userMsg.files || [], history, userMsg.skillId, findSkill(userMsg.skillId)?.version);
+      submit(userMsg.content, userMsg.files || [], history);
     },
     [current, streaming, updateCurrent, submit]
   );
@@ -719,7 +754,7 @@ export default function Index() {
         messages: s.messages.slice(0, idx),
         updatedAt: Date.now(),
       }));
-      submit(text, originalFiles, history, msgs[idx].skillId, findSkill(msgs[idx].skillId)?.version);
+      submit(text, originalFiles, history);
     },
     [current, streaming, updateCurrent, submit]
   );
@@ -765,18 +800,32 @@ export default function Index() {
     <div className="flex h-screen w-full overflow-hidden bg-background">
       <Sidebar
         sessions={sessions}
+        projects={projects}
         currentId={currentId}
-        onSelect={(id) => { if (!streaming) setCurrentId(id); }}
-        onNew={() => { if (!streaming) newChat(); }}
-        onDelete={(id) => { if (!streaming) deleteSession(id); }}
+        projectViewId={projectViewId}
+        onSelect={selectConversation}
+        onNew={newChat}
+        onDelete={deleteSession}
+        onRename={renameSession}
+        onPin={pinSession}
+        onMove={moveSession}
+        onCreateProject={createProject}
+        onRenameProject={renameProject}
+        onDeleteProject={deleteProject}
+        onOpenProject={openProject}
         modelName={modelName}
         onOpenAppearance={() => setAppearanceOpen(true)}
         onOpenWorkbench={() => setWorkbenchOpen(true)}
         right={appearance.sidebarSide === 'right'}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        disabled={workspaceBusy}
       />
       <main className={`flex min-w-0 flex-1 flex-col ${appearance.sidebarSide === 'right' ? 'order-1' : 'order-2'}`}>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+          {!sidebarOpen && <button type="button" onClick={() => setSidebarOpen(true)} aria-label="展开侧边栏" className="mr-1 rounded-lg p-1.5 text-muted-foreground hover:bg-muted"><PanelLeftOpen className="h-4 w-4" /></button>}
           <span className="text-sm font-semibold">小知</span>
+          {currentProject && <><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button type="button" disabled={workspaceBusy} onClick={() => openProject(currentProject.id)} className="max-w-40 truncate rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-muted">{currentProject.name}</button></>}
           <span className="text-[0.72rem] text-muted-foreground">知识产权办案助理</span>
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.7rem] text-primary">
             私人云端空间
@@ -810,14 +859,14 @@ export default function Index() {
               </div>
             </div>
           )}
-          {current && current.messages.length > 0 ? (
+          {viewedProject ? <ProjectOverview project={viewedProject} sessions={sessions.filter(session => session.projectId === viewedProject.id)} onNew={() => newChat(viewedProject.id)} onSelect={selectConversation} disabled={workspaceBusy} /> : current && current.messages.length > 0 ? (
             <MessageList messages={current.messages} avatar={appearance.avatar} onResend={resendEdited} onRegenerate={regenerate} />
           ) : (
             <EmptyState onPick={(t) => { setInput(t); }} avatar={appearance.avatar} />
           )}
         </div>
 
-        <ChatInput
+        {!viewedProject && <ChatInput
           value={input}
           onChange={setInput}
           onSend={handleSend}
@@ -826,13 +875,9 @@ export default function Index() {
           files={files}
           onRemoveFile={removeFile}
           streaming={streaming}
-          disabled={streaming || !current || (!!selectedSkill && preparedSkill?.id !== selectedSkill)}
-          onOpenSkills={() => setSkillsOpen(true)}
-          skillId={selectedSkill}
-          onClearSkill={clearSkill}
-          preparedSkill={preparedSkill}
-          skillError={skillError}
-          onRetrySkill={() => { const skill = findSkill(selectedSkill); if (skill) void pickSkill(skill); }}
+          disabled={streaming || !current}
+          onRetrieve={handleRetrieve}
+          onOpenContract={() => setContractOpen(true)}
           onDossierFile={handleDossierUpload}
           dossierBusy={dossierBusy}
           models={models}
@@ -841,7 +886,7 @@ export default function Index() {
           modelsLoading={modelsLoading}
           modelsError={modelsError}
           onRetryModels={() => { setModelsLoading(true); setModelsError(''); void loadModels(); }}
-        />
+        />}
       </main>
 
       <KnowledgePanel
@@ -881,7 +926,7 @@ export default function Index() {
         dossierCaseName={current?.dossier?.parties}
       />
 
-      <SkillPanel open={skillsOpen} onOpenChange={setSkillsOpen} onPick={pickSkill} />
+      <ContractPanel open={contractOpen} onClose={() => setContractOpen(false)} onGenerate={generateText} disabled={streaming || dossierBusy} />
     </div>
   );
 }

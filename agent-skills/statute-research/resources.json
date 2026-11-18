@@ -1,5 +1,0 @@
-[
-  {"path":"references/source-checklist.md","description":"来源支持程度、引用定位及成稿检查","load":"on-activation"},
-  {"path":"references/temporal-applicability.md","description":"新旧版本、行为时间及多规则适用问题出现时读取","load":"on-demand"},
-  {"path":"assets/legal-basis-note.md","description":"法条与事实对应的可编辑分析底稿模板","load":"on-activation"}
-]

@@ -14,7 +14,7 @@
 浏览器 → https://你的域名/
           ├── 页面、JS、CSS、图片 → Pages 静态资源
           └── /api/*             → Node.js Cloud Functions
-                                     └── Express → Skills / 模型 API
+                                     └── Express → 模型 API
 ```
 
 使用支持 npm、Express 的 **Cloud Functions（Node.js）**，目录为 `cloud-functions/`。不要混用边缘函数 `functions/` 的开发规范，也不要自行假定 `node-functions/` 是同等入口目录。

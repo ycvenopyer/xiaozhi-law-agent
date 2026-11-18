@@ -1,5 +1,0 @@
-[
-  {"path":"references/editorial-checklist.md","description":"来源归类、去重、日期及事实核验规则","load":"on-activation"},
-  {"path":"references/policy-impact.md","description":"政策、法规或程序变化的报道需要分析时读取","load":"on-demand"},
-  {"path":"assets/ip-brief.md","description":"事件、来源和业务影响的简报模板","load":"on-activation"}
-]

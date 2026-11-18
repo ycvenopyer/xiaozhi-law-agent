@@ -8,18 +8,9 @@ import { identity, recordRpc, type UserRecord } from '../cloudbase';
 import { requireModelConsent } from './privacy';
 import { AppError } from '../../middleware/errorHandler';
 import type { ChatMessage, AgentEvent } from './types';
-import { findSkill, loadSkill, resourceManifest, SKILL_CATALOG, skillMention } from './skills';
 
 export const agentRouter = Router();
 agentRouter.get('/models', (_req, res) => res.json(listProviders()));
-agentRouter.get('/skills', (_req, res) => res.json(SKILL_CATALOG));
-agentRouter.get('/skills/:id/prompt', (req, res) => {
-  const skill = findSkill(req.params.id);
-  if (!skill) return res.status(404).json({ message: '该 Skill 不存在。' });
-  if (req.query.version && req.query.version !== skill.version) return res.status(409).json({ message: '技能已更新，请刷新页面后重新选择。' });
-  return res.json({ id: skill.id, name: skill.name, version: skill.version, prompt: loadSkill(skill.id), resources: resourceManifest(skill.id) });
-});
-
 const messageSchema = z.object({
   role: z.enum(['user', 'assistant']), content: z.string(),
   images: z.array(z.string().startsWith('data:image/')).max(8).optional(),
@@ -27,8 +18,6 @@ const messageSchema = z.object({
 const chatSchema = z.object({
   messages: z.array(messageSchema).min(1).max(60), model: z.string(),
   knowledge: z.string().optional(), dossier: z.string().optional(),
-  skillId: z.string().max(64).optional(),
-  skillVersion: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   conversationId: z.string().min(1).max(200), assistantMessageId: z.string().min(1).max(200),
 });
 
@@ -43,10 +32,6 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   const parsed = chatSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: '请求格式不正确或上下文过长，请新建对话。' });
   const input = parsed.data;
-  const skillId = input.skillId || skillMention(input.messages.filter(message => message.role === 'user').at(-1)?.content || '');
-  const skill = findSkill(skillId);
-  if (skillId && !skill) return res.status(400).json({ message: '该 Skill 不存在，请刷新技能列表后重试。' });
-  if (input.skillVersion && input.skillVersion !== skill?.version) return res.status(409).json({ message: '技能已更新，请重新选择以加载最新提示词。' });
   const user = identity(res);
   const provider = selectedModel(input.model, input.messages.some(message => !!message.images?.length));
   await requireModelConsent(user.token);
@@ -74,7 +59,6 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   let failure = '';
   let content = '';
   const toolCalls: Array<Record<string, unknown>> = [];
-  const activatedSkills = new Set<string>();
   const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 15_000);
   // Leave time to persist a partial answer before the platform's hard limit.
   const deadline = setTimeout(() => { timedOut = true; ac.abort(); }, 100_000);
@@ -82,7 +66,6 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   try {
     await runAgent(input.messages as ChatMessage[], (event: AgentEvent) => {
       if (event.type === 'token') content += event.content;
-      if (event.type === 'skill') activatedSkills.add(event.id);
       if (event.type === 'tool_start') toolCalls.push({ ...event, status: 'running' });
       if (event.type === 'tool_end') {
         const tool = toolCalls.find(item => item.id === event.id);
@@ -90,7 +73,7 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
       }
       if (event.type === 'done') { completed = true; return; }
       send(event);
-    }, ac.signal, provider, input.knowledge, input.dossier, skill?.id);
+    }, ac.signal, provider, input.knowledge, input.dossier);
   } catch {
     // Do not expose upstream response bodies, prompts, or supplier diagnostics.
     failure = '模型生成失败，请稍后重试。';
@@ -101,8 +84,6 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
     assistant.content = content || (failure ? `⚠️ ${failure}` : '');
     assistant.status = status;
     assistant.toolCalls = toolCalls;
-    assistant.skillIds = [...activatedSkills];
-    assistant.skillVersions = Object.fromEntries([...activatedSkills].map(id => [id, findSkill(id)?.version]));
     stored.updatedAt = Date.now();
     try {
       const saved = await recordRpc<UserRecord>(user.token, 'finish_chat', {

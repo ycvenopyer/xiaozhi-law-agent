@@ -1,4 +1,0 @@
-interface:
-  display_name: "知产新闻"
-  short_description: "整理新闻与公告正文，提炼事件和业务影响"
-  default_prompt: "$ip-news 请将以下知识产权新闻或公告整理成简报，区分事实与分析：\n来源 / 发布日期：\n正文（也可通过附件提供）："

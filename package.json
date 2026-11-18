@@ -7,8 +7,6 @@
     "backend"
   ],
   "scripts": {
-    "skills:build": "node scripts/build-skills.mjs",
-    "skills:check": "node scripts/build-skills.mjs --check",
     "build": "npm run build --workspace frontend",
     "test:edgeone": "tsx --test scripts/edgeone.test.ts",
     "test:database": "tsx --test scripts/cloudbase-db.test.ts",

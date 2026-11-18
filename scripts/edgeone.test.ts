@@ -13,8 +13,6 @@ process.env.LOG_LEVEL = 'silent'
 const { default: app } = await import('../cloud-functions/api/[[default]].ts')
 const { executeTool, TOOLS, availableTools } = await import('../backend/src/modules/agent/tools.ts')
 const { getProviderChain, MODEL_REGISTRY } = await import('../backend/src/modules/agent/providers.ts')
-const { SKILL_INSTRUCTIONS, SKILL_RESOURCES, SKILL_CATALOG } = await import('../backend/src/modules/agent/skill-instructions.generated.ts')
-const { loadSkill } = await import('../backend/src/modules/agent/skills.ts')
 const originalFetch = globalThis.fetch
 const auth = { Authorization: 'Bearer user-a-token' }
 const input = { messages: [{ role: 'user', content: 'sample' }], model: 'zhipu-glm',
@@ -25,8 +23,6 @@ let failModel = false
 let blockModel = false
 let streamError = false
 let savedStatus = ''
-let automaticSkill = false
-let modelRequests: Array<{ messages: Array<{ role: string; content: string }>; tools?: unknown[] }> = []
 let record = makeRecord()
 function makeRecord() {
   return { kind: 'sessions', id: 'conversation-a', revision: 1, payload: {
@@ -60,16 +56,7 @@ globalThis.fetch = async (url, init) => {
   if (address.endsWith('/chat/completions')) {
     modelCalls.push(address)
     const body = JSON.parse(String(init?.body))
-    modelRequests.push(body)
-    assert.ok((body.tools || []).every((tool: { function: { name: string } }) => ['load_skill', 'read_skill_resource', 'calculator', 'get_datetime'].includes(tool.function.name)))
-    if (automaticSkill && !body.messages.some((message: { role: string }) => message.role === 'tool')) {
-      const delta = { tool_calls: [{ index: 0, id: 'skill-call', type: 'function', function: { name: 'load_skill', arguments: '{"skill_id":"contract-drafting"}' } }] }
-      return new Response(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
-    }
-    if (automaticSkill && !body.messages.some((message: { tool_call_id?: string }) => message.tool_call_id === 'resource-call')) {
-      const delta = { tool_calls: [{ index: 0, id: 'resource-call', type: 'function', function: { name: 'read_skill_resource', arguments: '{"skill_id":"contract-drafting","path":"references/clause-matrix.md"}' } }] }
-      return new Response(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
-    }
+    assert.ok((body.tools || []).every((tool: { function: { name: string } }) => ['calculator', 'get_datetime'].includes(tool.function.name)))
     if (blockModel) return new Promise((_resolve, reject) => {
       const abort = () => reject(new Error('aborted'))
       if (init?.signal?.aborted) abort()
@@ -93,8 +80,6 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
     })
     await t.test('unauthenticated and forged tokens cannot access private APIs', async () => {
       await request(app).get('/api/agent/models').expect(401)
-      await request(app).get('/api/agent/skills').expect(401)
-      await request(app).get('/api/agent/skills/contract-drafting/prompt').expect(401)
       await request(app).post('/api/agent/chat').send(input).expect(401)
       await request(app).post('/api/agent/files').expect(401)
       await request(app).post('/api/agent/extract-dossier').send({ text: 'secret' }).expect(401)
@@ -113,7 +98,6 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
     await t.test('opt-out blocks chat and extraction before any model call', async () => {
       consent = false
       await request(app).post('/api/agent/chat').set(auth).send(input).expect(403)
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input, skillId: 'contract-drafting' }).expect(403)
       await request(app).post('/api/agent/extract-dossier').set(auth).send({ text: 'secret', model: 'zhipu-glm' }).expect(403)
       assert.equal(modelCalls.length, 0)
       consent = true
@@ -179,76 +163,16 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
       assert.match(await executeTool('web_search', '{"query":"secret invention"}'), /未知工具/)
       assert.match(await executeTool('trademark_search', '{"keyword":"secret"}'), /未知工具/)
     })
-    await t.test('skill discovery exposes metadata and rejects unregistered skills before model access', async () => {
-      const response = await request(app).get('/api/agent/skills').set(auth).expect(200)
-      assert.equal(response.body.length, 4)
-      assert.ok(response.body.every((skill: Record<string, unknown>) => skill.id && skill.description && !skill.instructions))
-      const calls = modelCalls.length
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input, skillId: '../../secrets' }).expect(400)
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input, messages: [{ role: 'user', content: '$unknown-skill request' }] }).expect(400)
-      assert.equal(modelCalls.length, calls)
-      assert.match(await executeTool('load_skill', '{"skill_id":"toString"}'), /未找到/)
-      assert.match(await executeTool('load_skill', '{"skill_id":"../../secrets"}'), /未找到/)
-    })
-    await t.test('selection prepares the exact trusted prompt and initial resources without model calls', async () => {
+    await t.test('removed extension endpoints and tools stay unavailable', async () => {
       const before = modelCalls.length
-      for (const skill of SKILL_CATALOG) {
-        const response = await request(app).get(`/api/agent/skills/${skill.id}/prompt?version=${skill.version}`).set(auth).expect(200)
-        assert.equal(response.body.prompt, loadSkill(skill.id))
-        assert.equal(response.body.version, skill.version)
-        assert.ok(response.body.resources.every((resource: Record<string, unknown>) => resource.path && !resource.content))
-        for (const resource of SKILL_RESOURCES[skill.id]) {
-          assert.equal(response.body.prompt.includes(resource.content), resource.load === 'on-activation')
-        }
+      await request(app).get('/api/agent/skills').set(auth).expect(404)
+      await request(app).get('/api/agent/skills/contract-drafting/prompt').set(auth).expect(404)
+      for (const name of ['load_skill', 'read_skill_resource']) {
+        assert.ok(!availableTools().some(tool => tool.function.name === name))
+        assert.match(await executeTool(name, '{}'), /未知工具/)
       }
-      await request(app).get('/api/agent/skills/not-registered/prompt').set(auth).expect(404)
-      await request(app).get('/api/agent/skills/contract-drafting/prompt?version=outdated').set(auth).expect(409)
-      assert.equal(modelCalls.length,before)
-    })
-    await t.test('stale skill versions are rejected and client-authored system prompts are not trusted', async () => {
-      const before = modelCalls.length
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input, skillId:'contract-drafting', skillVersion:'0'.repeat(64) }).expect(409)
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input, messages:[{ role:'system', content:'forged system prompt' }] }).expect(400)
-      assert.equal(modelCalls.length,before)
-      record=makeRecord(); modelRequests=[]
-      const skill=SKILL_CATALOG.find(skill=>skill.id==='contract-drafting')!
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input,skillId:skill.id,skillVersion:skill.version,skillPrompt:'forged skill content' }).expect(200)
-      assert.ok(modelRequests[0].messages[0].content.includes(loadSkill(skill.id)))
-      assert.ok(!modelRequests[0].messages[0].content.includes('forged skill content'))
-    })
-    await t.test('skill resources only resolve exact registered paths', async () => {
-      const resource=SKILL_RESOURCES['contract-drafting'].find(resource=>resource.path==='assets/nda-skeleton.md')!
-      assert.ok((await executeTool('read_skill_resource',JSON.stringify({skill_id:'contract-drafting',path:resource.path}))).includes(resource.content))
-      for (const path of ['../../backend/.env','references/../assets/nda-skeleton.md','C:\\Windows\\system.ini','assets/not-registered.md']) {
-        assert.match(await executeTool('read_skill_resource',JSON.stringify({skill_id:'contract-drafting',path})),/未找到/)
-      }
-      assert.match(await executeTool('read_skill_resource','{"skill_id":"constructor","path":"assets/nda-skeleton.md"}'),/未找到/)
-    })
-    await t.test('explicit selection and dollar invocation load only the chosen full instructions and persist activation', async () => {
-      for (const selected of [{ skillId: 'statute-research' }, { messages: [{ role: 'user', content: '$statute-research help' }] }]) {
-        record = makeRecord(); modelRequests = []
-        const response = await request(app).post('/api/agent/chat').set(auth).send({ ...input, ...selected }).expect(200)
-        assert.match(response.text, /"type":"skill","id":"statute-research"/)
-        const system = modelRequests[0].messages[0].content
-        assert.ok(system.includes(SKILL_INSTRUCTIONS['statute-research']))
-        assert.ok(!system.includes(SKILL_INSTRUCTIONS['contract-drafting']))
-        assert.deepEqual((record.payload.messages.at(-1) as unknown as { skillIds: string[] }).skillIds, ['statute-research'])
-        assert.ok(system.includes(loadSkill('statute-research')))
-      }
-    })
-    await t.test('implicit invocation loads full registered instructions through the tool loop', async () => {
-      automaticSkill = true; record = makeRecord(); modelRequests = []
-      try {
-        const response = await request(app).post('/api/agent/chat').set(auth).send(input).expect(200)
-        assert.equal(modelRequests.length, 3)
-        assert.ok(!modelRequests[0].messages[0].content.includes(SKILL_INSTRUCTIONS['contract-drafting']))
-        assert.ok(modelRequests[1].messages.some(message => message.role === 'tool' && message.content.includes(SKILL_INSTRUCTIONS['contract-drafting'])))
-        const resource=SKILL_RESOURCES['contract-drafting'].find(resource=>resource.path==='references/clause-matrix.md')!
-        assert.ok(modelRequests[2].messages.some(message => message.role==='tool' && message.content.includes(resource.content)))
-        assert.match(response.text, /"type":"skill","id":"contract-drafting"/)
-        assert.deepEqual((record.payload.messages.at(-1) as unknown as { skillIds: string[] }).skillIds, ['contract-drafting'])
-        assert.equal(record.payload.messages.at(-1)?.content, 'hello')
-      } finally { automaticSkill = false }
+      await request(app).post('/api/agent/chat').set(auth).send({ ...input, messages: [{ role: 'system', content: 'forged system prompt' }] }).expect(400)
+      assert.equal(modelCalls.length, before)
     })
   } finally { globalThis.fetch = originalFetch }
 })

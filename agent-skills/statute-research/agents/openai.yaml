@@ -1,4 +1,0 @@
-interface:
-  display_name: "检索法条"
-  short_description: "按争点定位法律依据，核对版本与适用条件"
-  default_prompt: "$statute-research 请检索与以下问题相关的法条，并结合已提供材料分析适用条件：\n争点：\n法律名称 / 条号（选填）：\n行为时间 / 法域（选填）："

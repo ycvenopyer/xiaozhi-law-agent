@@ -5,8 +5,6 @@ import { downloadOriginal, imageDataUrl } from '@/lib/private-files';
 import { Markdown } from './Markdown';
 import { ToolCallCard } from './ToolCallCard';
 import { MessageActions } from './MessageActions';
-import { findSkill } from '@/lib/skills';
-import { SkillIcon } from './SkillPanel';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -94,7 +92,6 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
     return (
       <div className="msg-user flex flex-col items-end">
         <div className="max-w-[82%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-primary-foreground shadow-sm">
-          {message.skillId && <div className="mb-1.5 flex items-center gap-1.5 text-xs opacity-80"><SkillIcon id={message.skillId} className="h-3 w-3" />{findSkill(message.skillId)?.name || message.skillId}</div>}
           {message.content && (
             <p className="whitespace-pre-wrap text-[0.95rem] leading-relaxed">{message.content}</p>
           )}
@@ -125,7 +122,6 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
         className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-primary/20"
       />
       <div className="min-w-0 flex-1 pt-1">
-        {!!message.skillIds?.length && <div className="mb-2 flex flex-wrap gap-2">{message.skillIds.map(id => <span key={id} className="flex items-center gap-1 rounded-md bg-primary/8 px-2 py-1 text-xs text-primary"><SkillIcon id={id} className="h-3 w-3" />{findSkill(id)?.name || id}</span>)}</div>}
         {empty ? (
           <div className="flex items-center gap-1.5 text-[0.85rem] text-muted-foreground">
             {message.status === 'generating' && !generationExpired ? <><Loader2 className="h-4 w-4 animate-spin" />思考中…</> : '此回答尚未完成，可重新生成。'}

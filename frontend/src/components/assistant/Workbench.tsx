@@ -10,6 +10,7 @@ import {
   Copy,
   Check,
   Loader2,
+  Newspaper,
 } from 'lucide-react';
 import {
   loadDeadlines,
@@ -24,7 +25,7 @@ import {
   type ConflictMatter,
 } from '@/lib/workbench';
 
-type Tab = 'deadline' | 'doc' | 'conflict';
+type Tab = 'deadline' | 'doc' | 'news' | 'conflict';
 
 interface Props {
   open: boolean;
@@ -59,6 +60,7 @@ export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props)
         onClick={onClose}
       />
       <aside
+        aria-label="事务台"
         className={`absolute right-0 top-0 flex h-full w-full max-w-md flex-col bg-card shadow-xl transition-transform ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
@@ -67,6 +69,7 @@ export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props)
           <ClipboardList className="h-4 w-4 text-primary" />
           <span className="text-sm font-semibold">事务台</span>
           <button
+            aria-label="关闭事务台"
             onClick={onClose}
             className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
@@ -81,6 +84,9 @@ export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props)
           <TabButton active={tab === 'doc'} onClick={() => setTab('doc')} icon={<FileText className="h-3.5 w-3.5" />}>
             文件起草
           </TabButton>
+          <TabButton active={tab === 'news'} onClick={() => setTab('news')} icon={<Newspaper className="h-3.5 w-3.5" />}>
+            知产新闻
+          </TabButton>
           <TabButton active={tab === 'conflict'} onClick={() => setTab('conflict')} icon={<Users className="h-3.5 w-3.5" />}>
             利益冲突
           </TabButton>
@@ -89,9 +95,80 @@ export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props)
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {tab === 'deadline' && <DeadlineTab dossierCaseName={dossierCaseName} />}
           {tab === 'doc' && <DocTab onGenerate={onGenerate} />}
+          {tab === 'news' && <NewsTab onGenerate={onGenerate} />}
           {tab === 'conflict' && <ConflictTab onGenerate={onGenerate} />}
         </div>
       </aside>
+    </div>
+  );
+}
+
+function NewsTab({ onGenerate }: Pick<Props, 'onGenerate'>) {
+  const [source, setSource] = useState('');
+  const [result, setResult] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function generate() {
+    if (busy || !source.trim()) return;
+    setBusy(true);
+    setResult('');
+    setCopied(false);
+    try {
+      await onGenerate(`请整理以下知识产权新闻或公告正文，形成供承办律师阅读的简报：
+1. 仅依据下面的新闻材料，按立法政策、典型案例、行业动态分类；不要把卷宗中的个案信息当作新闻。
+2. 每则列出标题、原文中提供的来源与发布日期、事件要点和可能的业务影响；缺少的来源或日期标为“未提供”。
+3. 区分材料明确陈述的事实与分析判断，说明需要进一步核实的内容，不编造新闻、案号、日期或链接。
+4. 当前不提供网页搜索，不得宣称已获取今日最新新闻。
+
+【新闻材料】
+${source.trim()}
+【新闻材料结束】`, setResult);
+    } catch (error) {
+      setResult('⚠️ ' + ((error as Error).message || '整理失败'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
+        粘贴新闻或公告正文，整理事件要点、来源与业务影响。当前不提供网页搜索，请一并提供标题、发布日期和来源链接。
+      </p>
+      <label className="block space-y-1.5 text-[0.76rem]">
+        <span>新闻或公告原文</span>
+        <textarea
+          value={source}
+          onChange={(event) => setSource(event.target.value)}
+          rows={9}
+          placeholder="粘贴新闻、公告或典型案例发布稿…"
+          className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-2 text-[0.82rem] outline-none focus:border-primary/50"
+        />
+      </label>
+      <button
+        onClick={() => void generate()}
+        disabled={busy || !source.trim()}
+        className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[0.8rem] text-primary-foreground hover:opacity-90 disabled:opacity-40"
+      >
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Newspaper className="h-3.5 w-3.5" />}
+        {busy ? '整理中…' : '整理知产新闻'}
+      </button>
+      {result && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[0.74rem]">
+            <span className="font-medium">新闻简报</span>
+            <button
+              onClick={() => { void navigator.clipboard?.writeText(result); setCopied(true); }}
+              className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground hover:text-foreground"
+            >
+              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              {copied ? '已复制' : '复制'}
+            </button>
+          </div>
+          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 p-3 font-sans text-[0.82rem] leading-relaxed">{result}</pre>
+        </div>
+      )}
     </div>
   );
 }

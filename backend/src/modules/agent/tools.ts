@@ -1,40 +1,10 @@
 import type { ToolDefinition } from './types';
-import { SKILL_CATALOG, loadSkill, readSkillResource } from './skills';
 
 /**
  * Tool catalogue exposed to the LLM. The model decides when to call these.
- * Skills load trusted instructions; no public-web search adapter is installed.
+ * No public-web search adapter is installed.
  */
 export const TOOLS: ToolDefinition[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'load_skill',
-      description: '按任务需要加载一个内置 Skill 的完整工作规范。可用于法条、案例、知产新闻整理、合同起草与审核；不会访问网络或增加权限。',
-      parameters: {
-        type: 'object',
-        properties: {
-          skill_id: { type: 'string', description: '要加载的技能 ID', enum: SKILL_CATALOG.map(skill => skill.id) },
-        },
-        required: ['skill_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_skill_resource',
-      description: '按已加载技能中的资源清单读取参考规范或交付模板，仅支持已注册相对路径，不读取用户文件、不联网。',
-      parameters: {
-        type: 'object',
-        properties: {
-          skill_id: { type: 'string', description: '技能 ID', enum: SKILL_CATALOG.map(skill => skill.id) },
-          path: { type: 'string', description: '资源清单中的完整相对路径，例如 references/clause-matrix.md' },
-        },
-        required: ['skill_id', 'path'],
-      },
-    },
-  },
   {
     type: 'function',
     function: {
@@ -194,10 +164,6 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
 
   try {
     switch (name) {
-      case 'load_skill':
-        return loadSkill(String(args.skill_id ?? ''));
-      case 'read_skill_resource':
-        return readSkillResource(String(args.skill_id ?? ''), String(args.path ?? ''));
       case 'calculator':
         return calcTool(String(args.expression ?? ''));
       case 'get_datetime':

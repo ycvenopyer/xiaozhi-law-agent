@@ -2,7 +2,6 @@ import { env } from '../../config/env';
 import { availableTools, executeTool } from './tools';
 import { MODEL_REGISTRY, getProviderChain, type ModelProvider } from './providers';
 import type { AgentEvent, ChatMessage } from './types';
-import { findSkill, loadSkill, SKILL_DISCOVERY } from './skills';
 
 const SYSTEM_PROMPT = `你是一位资深知识产权律师的私人助理，长期协助其办理知识产权侵权案件，业务涵盖专利、商标、著作权、商业秘密、不正当竞争等领域。你的核心职责是：
 
@@ -329,20 +328,12 @@ export async function runAgent(
   signal?: AbortSignal,
   provider: ModelProvider = MODEL_REGISTRY[0],
   knowledge?: string,
-  dossier?: string,
-  skillId?: string
+  dossier?: string
 ): Promise<void> {
   // Ensure a system persona is present. Inject the case dossier (this matter's
   // background) and the curated knowledge base (laws/cases) so the model reasons
   // from the actual case rather than answering in the abstract.
-  let systemPrompt = `${SYSTEM_PROMPT}\n\n${SKILL_DISCOVERY}`;
-  const skill = findSkill(skillId);
-  const loadedSkills = new Set<string>();
-  if (skill) {
-    systemPrompt += `\n\n${loadSkill(skill.id)}`;
-    loadedSkills.add(skill.id);
-    onEvent({ type: 'skill', id: skill.id, name: skill.name });
-  }
+  let systemPrompt = SYSTEM_PROMPT;
   const dossierText = dossier?.trim();
   const knowledgeText = knowledge?.trim();
   if (dossierText) {
@@ -357,8 +348,8 @@ export async function runAgent(
       ? history.map((m) => ({ ...m }))
       : [{ role: 'system', content: systemPrompt }, ...history.map((m) => ({ ...m }))];
 
-  const MAX_ROUNDS = 5;
-  /** Bound external data results; registered skill instructions are loaded in full. */
+  const MAX_ROUNDS = 3;
+  /** Bound tool results to keep the model context manageable. */
   const TOOL_RESULT_LIMIT = 2400;
   const clip = (s: string) => (s.length > TOOL_RESULT_LIMIT ? s.slice(0, TOOL_RESULT_LIMIT) + '\n…（结果过长已截断）' : s);
   // Transient upstream failures (free-tier rate limits, network blips) are
@@ -432,29 +423,20 @@ export async function runAgent(
           const args = tc.function.arguments;
           onEvent({ type: 'tool_start', id: tc.id, name, arguments: args });
           const result = await executeTool(name, args);
-          if (name === 'load_skill') {
-            let requested: string | undefined;
-            try { requested = JSON.parse(args).skill_id; } catch { /* executeTool returns a validation error */ }
-            const activated = findSkill(requested);
-            if (activated && !loadedSkills.has(activated.id)) {
-              loadedSkills.add(activated.id);
-              onEvent({ type: 'skill', id: activated.id, name: activated.name });
-            }
-          }
           onEvent({ type: 'tool_end', id: tc.id, name, result });
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: name === 'load_skill' || name === 'read_skill_resource' ? result : clip(result) });
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: clip(result) });
           executedTools = true;
         }
         // 检索节制：已经过多轮检索后，明确要求模型停止搜索、直接作答。
         const toolRoundCount = messages.filter(
           (m) => m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0
         ).length;
-        if (toolRoundCount >= 4 && !nudged) {
+        if (toolRoundCount >= 2 && !nudged) {
           nudged = true;
           messages.push({
             role: 'user',
             content:
-              '已经完成多轮工具调用。请基于已加载的技能规范和已提供的材料直接回答；资料不足时说明缺口，不编造来源或事实。',
+              '已经完成多轮工具调用。请基于已提供的材料直接回答；资料不足时说明缺口，不编造来源或事实。',
           });
         }
         streamErr = null;
@@ -525,7 +507,7 @@ export async function runAgent(
       {
         role: 'user',
         content:
-          '工具调用轮次已达上限。请按已加载技能和所提供材料直接输出最终回答；没有可靠依据的内容标注待核实，引用链接仅限材料中实际提供的链接。',
+          '工具调用轮次已达上限。请按所提供材料直接输出最终回答；没有可靠依据的内容标注待核实，引用链接仅限材料中实际提供的链接。',
       },
     ];
     let streamedAny = false;

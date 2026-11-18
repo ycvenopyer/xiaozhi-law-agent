@@ -41,10 +41,6 @@ export interface ChatMessage {
   files?: AttachedFile[];
   createdAt: number;
   status?: 'generating' | 'complete' | 'failed' | 'interrupted';
-  skillId?: string;
-  skillVersion?: string;
-  skillIds?: string[];
-  skillVersions?: Record<string, string>;
 }
 
 export interface Session {
@@ -53,8 +49,19 @@ export interface Session {
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
+  /** Sidebar organization, stored with the account's conversation record. */
+  projectId?: string;
+  pinnedAt?: number;
+  titleEdited?: boolean;
   /** Structured case background for the matter being handled in this session. */
   dossier?: CaseDossier;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 /** A lawyer-style case file: who, what cause, what happened, what's claimed. */
@@ -102,7 +109,6 @@ export function dossierToText(d?: CaseDossier): string {
 }
 
 export type AgentEvent =
-  | { type: 'skill'; id: string; name: string }
   | { type: 'token'; content: string }
   | { type: 'tool_start'; id: string; name: string; arguments: string }
   | { type: 'tool_end'; id: string; name: string; result: string }
@@ -111,8 +117,6 @@ export type AgentEvent =
 
 /** Friendly metadata for each built-in tool. */
 export const TOOL_META: Record<string, { label: string; icon: string; tone: string }> = {
-  load_skill: { label: '加载技能', icon: 'BookOpen', tone: 'text-primary' },
-  read_skill_resource: { label: '读取技能参考与模板', icon: 'BookOpen', tone: 'text-primary' },
   calculator: { label: '计算', icon: 'Calculator', tone: 'text-emerald-600 dark:text-emerald-400' },
   get_datetime: { label: '时间', icon: 'Clock', tone: 'text-sky-600 dark:text-sky-400' },
 };
