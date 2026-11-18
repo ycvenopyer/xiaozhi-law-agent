@@ -6,6 +6,7 @@ process.env.NODE_ENV = 'test'
 process.env.API_PREFIX = '/api'
 process.env.ZHIPU_API_KEY = 'synthetic-model-key'
 process.env.CLOUDBASE_PUBLISHABLE_KEY = 'synthetic-publishable-key'
+process.env.XIAOZHI_LOGIN_LOOKUP_KEY = 'test-only-lookup-key'
 process.env.LOG_LEVEL = 'silent'
 
 const { default: app } = await import('../cloud-functions/api/[[default]].ts')
@@ -38,6 +39,18 @@ function json(value: unknown, status = 200) { return new Response(JSON.stringify
 globalThis.fetch = async (url, init) => {
   const address = String(url)
   const headers = new Headers(init?.headers)
+  if (address.endsWith('/rpc/resolve_login_name')) {
+    const { p_name, p_key } = JSON.parse(String(init?.body))
+    assert.equal(p_key, 'test-only-lookup-key')
+    return json(p_name === '知Yc1' ? { login: 'a@example.test', owner: 'user-a' }
+      : p_name === '过期别名' ? { login: 'a@example.test', owner: 'user-b' } : {})
+  }
+  if (address.endsWith('/auth/v1/signin')) {
+    const { username, password } = JSON.parse(String(init?.body))
+    return username === 'a@example.test' && password === 'fixture' ? json({
+      access_token:'user-a-token', refresh_token:'test-refresh', private_field:'discard',
+    }) : json({},401)
+  }
   if (address.endsWith('/auth/v1/user/me')) {
     return headers.get('authorization') === auth.Authorization ? json({ sub: 'user-a', user_id: 'different-profile-id', email: 'a@example.test' }) : json({}, 401)
   }
@@ -96,6 +109,17 @@ globalThis.fetch = async (url, init) => {
 
 test('EdgeOne authentication, persistence, upload and privacy boundaries', async t => {
   try {
+    await t.test('username password login returns sessions only for the exact account', async () => {
+      const login = (username: string, password = 'fixture') => request(app).post('/api/auth/password').send({ username,password })
+      const ok = await login('知Yc1').expect(200)
+      assert.deepEqual(ok.body,{ access_token:'user-a-token',refresh_token:'test-refresh' })
+      assert.equal(ok.headers['cache-control'],'no-store')
+      const wrongCase = await login('知yc1').expect(401)
+      const wrongPassword = await login('知Yc1','other').expect(401)
+      assert.deepEqual(wrongCase.body,wrongPassword.body)
+      await login('过期别名').expect(401)
+      await login('知'.repeat(257)).expect(400)
+    })
     await t.test('health routes work with full and stripped API prefixes', async () => {
       for (const prefix of ['/api', '']) {
         const health = await request(app).get(`${prefix}/health`).expect(200)

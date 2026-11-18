@@ -1,6 +1,7 @@
 """Sidebar/project flows against synthetic, account-scoped cloud storage."""
 import json
 from pathlib import Path
+from qa_catalog import PUBLIC_CATALOG
 from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import sync_playwright, expect
 
@@ -24,6 +25,9 @@ def configure(page, owner):
     page.route('**/api/auth/me',lambda route:route.fulfill(json={'id':owner,'email':owner+'@example.test'}))
     page.route('**/api/agent/models',lambda route:route.fulfill(json=[dict(id='zhipu-glm',label='测试模型',available=True,free=True)]))
     def gateway(route):
+        if '/rpc/read_public_knowledge' in route.request.url:
+            route.fulfill(json=PUBLIC_CATALOG)
+            return
         rows = records[owner]
         if '/rpc/put_user_record' in route.request.url:
             body=route.request.post_data_json
@@ -85,6 +89,24 @@ with sync_playwright() as p:
     page.goto('http://127.0.0.1:5173')
     page.get_by_text('私人云端空间',exact=True).wait_for();synced(page)
     print('Sidebar controls:',page.get_by_role('complementary').get_by_role('button').all_text_contents())
+
+    page.get_by_role('button',name='知识库',exact=True).click()
+    page.get_by_text('公共知识库 158 条 · 我的条目 0 条',exact=False).wait_for()
+    assert not page.get_by_title('编辑',exact=True).count()
+    page.get_by_role('button',name='新增',exact=True).click()
+    page.get_by_placeholder('标题，如：商标法 第五十七条').fill('模拟私有案例')
+    page.get_by_label('条目类型').select_option('case')
+    page.get_by_placeholder('法条或案例正文……').fill('仅测试账号 A 可见的模拟材料')
+    page.get_by_role('button',name='保存',exact=True).click()
+    page.get_by_text('公共知识库 158 条 · 我的条目 1 条',exact=False).wait_for()
+    page.get_by_role('button',name='关闭知识库',exact=True).click()
+    synced(page)
+    assert len([row for row in records['account-a'].values() if row['kind']=='knowledge']) == 1
+    page.reload(wait_until='networkidle')
+    page.get_by_role('button',name='知识库',exact=True).click()
+    page.get_by_label('搜索知识库').fill('模拟私有案例')
+    page.get_by_text('模拟私有案例',exact=True).wait_for()
+    page.get_by_role('button',name='关闭知识库',exact=True).click()
 
     rename_chat(page,'新对话','欢迎咨询')
     welcome_id=conversation('account-a','欢迎咨询')['id']
@@ -170,6 +192,11 @@ with sync_playwright() as p:
     other_context=browser.new_context(viewport={'width':1200,'height':900})
     other=other_context.new_page();configure(other,'account-b')
     other.goto('http://127.0.0.1:5173');other.get_by_text('私人云端空间',exact=True).wait_for();synced(other)
+    other.get_by_role('button',name='知识库',exact=True).click()
+    other.get_by_text('公共知识库 158 条 · 我的条目 0 条',exact=False).wait_for()
+    other.get_by_label('搜索知识库').fill('模拟私有案例')
+    assert not other.get_by_text('模拟私有案例',exact=True).count()
+    other.get_by_role('button',name='关闭知识库',exact=True).click()
     assert not other.get_by_role('button',name='打开项目：商标项目',exact=True).count()
     old_ids={row['id'] for row in records['account-b'].values() if row['kind']=='sessions'}
     chat_menu(other,'新对话');other.get_by_role('menuitem',name='删除',exact=True).click()

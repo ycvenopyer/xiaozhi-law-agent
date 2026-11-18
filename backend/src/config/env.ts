@@ -17,6 +17,7 @@ const envSchema = z.object({
   RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).default('100'),
   CLOUDBASE_ENV_ID: z.string().regex(/^[a-zA-Z0-9-]+$/).default('xiaozhi-law-agent-d3d75m0c534925'),
   CLOUDBASE_PUBLISHABLE_KEY: z.string().optional(),
+  XIAOZHI_LOGIN_LOOKUP_KEY: z.string().optional(),
 
   // ============================================
   // LLM (OpenAI-compatible) configuration

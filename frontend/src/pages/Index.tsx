@@ -239,10 +239,6 @@ export default function Index() {
     return unsubscribe;
   }, [appearance]);
 
-  // Persist the knowledge base and its enable flag locally.
-  useEffect(() => {
-    saveKB(kb);
-  }, [kb]);
   useEffect(() => {
     try {
       localStorage.setItem('agent-kb-enabled', kbEnabled ? '1' : '0');
@@ -693,7 +689,7 @@ export default function Index() {
         open={kbOpen}
         onClose={() => setKbOpen(false)}
         entries={kb}
-        onChange={setKb}
+        onChange={entries => { setKb(entries); saveKB(entries); }}
         enabled={kbEnabled}
         onToggleEnabled={setKbEnabled}
       />

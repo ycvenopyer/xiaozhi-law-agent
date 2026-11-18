@@ -1,3 +1,4 @@
+import type { KBEntry } from '../../../../shared/knowledge';
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
@@ -124,7 +125,8 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   try {
     if (input.workflow) {
       const facts = input.messages.at(-1)?.content || '';
-      content = await generateReport(input.workflow, facts, input.knowledge || '', provider, ac.signal);
+      content = await generateReport(input.workflow, facts, input.knowledge || '', provider, ac.signal,
+        await recordRpc<KBEntry[]>(user.token, 'read_public_knowledge', {}));
       send({ type: 'token', content });
       completed = true;
     } else await runAgent(input.messages as ChatMessage[], (event: AgentEvent) => {

@@ -1,4 +1,6 @@
+import { publicSeed } from './knowledge-seed'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import library from '../shared/law-library.json'
 import { generateReport } from '../backend/src/modules/agent/workbench-report'
@@ -11,8 +13,30 @@ import {
 } from '../frontend/src/lib/fto'
 import { kbToText, loadKB } from '../frontend/src/lib/knowledge'
 
+test('deployed catalog preserves reviewed entries and personal changes stay separate', async () => {
+  const sql = await readFile(new URL('../database/seeds/public_knowledge.sql',import.meta.url),'utf8')
+  assert.deepEqual(JSON.parse(sql.split('$catalog$')[1]), publicSeed)
+  const article = publicSeed.find(entry => entry.official)!
+  const guide = publicSeed.find(entry => entry.legacyReference)!
+  const list = loadKB(publicSeed, [
+    { id:article.id, deleted:true },
+    { ...guide, title:'我的笔记', content:'自己的参考内容', builtin:false, legacyReference:false },
+  ])
+  assert.equal(list.filter(entry => entry.builtin).length,158)
+  assert.equal(list.find(entry => entry.id === article.id)?.enabled,false)
+  assert.equal(list.find(entry => entry.id === guide.id)?.title,guide.title)
+  assert.equal(list.find(entry => entry.title === '我的笔记')?.builtin,false)
+  const legacyEdit = { ...guide, title:'改过的案例', builtin:false }
+  const privateCopy = { ...legacyEdit, id:'private-' + guide.id, title:'保存后的案例' }
+  for (const saved of [[legacyEdit,privateCopy],[privateCopy,legacyEdit]]) {
+    const retried = loadKB(publicSeed,saved).filter(entry => !entry.builtin)
+    assert.deepEqual(retried.map(entry => entry.title), ['保存后的案例'])
+  }
+  assert.equal(loadKB(publicSeed,[]).find(entry => entry.id === article.id)?.enabled,true)
+})
+
 test('risk scenarios retrieve dated, enabled, official articles', () => {
-  const kb = loadKB()
+  const kb = loadKB(publicSeed, [])
   for (const [query, id] of [
     ['商标冲突', 'law-tm19-57'],
     ['开源许可证', 'law-software-8'],
@@ -76,7 +100,7 @@ test('structured reports retry a fabricated quote before emitting or persisting 
     '职务发明权属',
     knowledge,
     provider,
-    new AbortController().signal
+    new AbortController().signal, publicSeed
   )
   assert.equal(attempts, 2)
   assert.ok(report.includes(law.source_url) && report.endsWith('需人工复核'))
@@ -87,7 +111,7 @@ test('structured reports retry a fabricated quote before emitting or persisting 
     '职务发明权属',
     '',
     provider,
-    new AbortController().signal
+    new AbortController().signal, publicSeed
   )
   assert.match(unverified, /无法判断。支撑结论的引文未通过核验/)
   assert.doesNotMatch(unverified, /缺少合作合同|需要核对权属约定/)
@@ -97,12 +121,12 @@ test('structured reports retry a fabricated quote before emitting or persisting 
     '商标侵权\n行为发生时间：待补充',
     '',
     provider,
-    new AbortController().signal
+    new AbortController().signal, publicSeed
   )
   assert.match(incomplete, /行为发生时间具体是什么/)
   assert.equal(attempts, callsBefore)
   await assert.rejects(
-    generateReport('draft', '保密协议', knowledge, provider, new AbortController().signal)
+    generateReport('draft', '保密协议', knowledge, provider, new AbortController().signal, publicSeed)
   )
 })
 

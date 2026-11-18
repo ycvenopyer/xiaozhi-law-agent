@@ -49,6 +49,8 @@ export async function pgRequest<T>(path: string, init: RequestInit = {}): Promis
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
+    if (path === 'rpc/set_login_name' && error.code === '23505') throw new Error('这个用户名已被占用，请换一个。');
+    if (path === 'rpc/set_login_name' && error.code === '22023') throw new Error('请输入 1–256 个汉字、英文字母或数字。');
     if (res.status === 401) throw new Error('登录已过期，请重新登录。');
     if (res.status === 409 || error.code === '40001') throw new Error('数据已在其他页面更新，请刷新后重试，当前修改尚未保存。');
     throw new Error(`云端操作失败（${res.status}）。请检查数据库迁移、权限和环境配置。`);

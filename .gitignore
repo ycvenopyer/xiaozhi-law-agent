@@ -11,6 +11,7 @@ dist/
 dist-ssr/
 coverage/
 .qa-artifacts/
+__pycache__/
 logs/
 *.log
 *.tsbuildinfo
@@ -20,3 +21,28 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Workspace-specific editor files, local overrides and debug logs
+/frontend/**/node_modules
+/frontend/**/dist
+/frontend/**/dist-ssr
+/frontend/**/logs
+/frontend/**/.idea
+/frontend/**/*.local
+/frontend/.vscode/*
+!/frontend/.vscode/extensions.json
+/frontend/**/*.suo
+/frontend/**/*.ntvs*
+/frontend/**/*.njsproj
+/frontend/**/*.sln
+/frontend/**/*.sw?
+/frontend/**/npm-debug.log*
+/frontend/**/yarn-debug.log*
+/frontend/**/yarn-error.log*
+/frontend/**/pnpm-debug.log*
+/frontend/**/lerna-debug.log*
+/backend/**/npm-debug.log*
+/backend/**/.vscode/
+/backend/**/*.swp
+/backend/**/*.swo
+/backend/prisma/migrations/

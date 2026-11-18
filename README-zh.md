@@ -9,11 +9,11 @@
 | 位置 | 功能 |
 | --- | --- |
 | 侧边栏 | 按标题或消息正文搜索对话，新建、重命名、置顶、删除对话和按项目整理 |
-| 左下角账号菜单 | 设置、帮助和退出登录。设置包含第三方模型授权、旧浏览器资料导入、文件原件下载和界面外观 |
+| 左下角账号菜单 | 设置、帮助和退出登录。设置中可管理用户名和密码、模型外发授权、联网搜索及外观，也可下载文件原件 |
 | 右上角 | 知识库和事务台。事务台提供检索比对、侵权识别、合规提示、知产文书、今日知产新闻和文件起草 |
 | 对话输入框 | 上传普通附件、检索法条、检索案例、合同起草与审核，以及选择内置或自定义模型 |
 
-法条与案例检索以启用的知识库和提交的材料为依据。今日知产新闻使用你在「设置 → 联网搜索」填写的 Tavily API Key，按北京时间筛选当天的新闻并展示原文链接。搜索消耗你的 Tavily 额度。法律引用和文书草稿需人工核对。卷宗界面已下线，旧卷宗记录仍可随旧资料导入，当前界面不会将其注入对话。
+法条与案例检索以启用的知识库和提交的材料为依据。今日知产新闻使用你在「设置 → 联网搜索」填写的 Tavily API Key，按北京时间筛选当天的新闻并展示原文链接。搜索消耗你的 Tavily 额度。法律引用和文书草稿需人工核对。
 
 ## 本地开发
 
@@ -35,6 +35,7 @@ npm run dev --workspace frontend
 
 - **内置模型**为智谱 GLM-4.7、GLM-4.7-Flash、GLM-4.6V-Flash 和 GLM-4.5-Air，通过后端的 `ZHIPU_API_KEY` 启用。菜单中的「已配置」表示 Key 已被读取，模型实际可用性以调用结果为准。
 - **自定义模型**从输入框的模型菜单添加。填写厂商、Base URL、API Key 和模型 ID，可先做连通测试。接口须支持公网 HTTPS 和 OpenAI 兼容流式响应。配置按账号保存在当前浏览器，Key 保存在当前标签页会话，退出登录时清除。
+- **知识库**由 PostgreSQL 提供 158 条公共资料，包括 144 条分版本法规原文、6 条案例、8 条参考资料。用户从「知识库 → 新增」保存的条目由本人查看、编辑和删除。登录用户名支持 1–256 个汉字、英文字母或数字，按全名区分大小写并保证唯一。
 - **CloudBase** 管理认证与 PostgreSQL 业务记录，文件原件存放在私有桶。外观、模型等偏好保留在浏览器。第三方模型处理默认关闭，开启后对话、附件和启用的知识库可能发送给所选模型服务。
 
 ## 项目结构
@@ -43,15 +44,15 @@ npm run dev --workspace frontend
 frontend/        React 工作空间、CloudBase 客户端与静态资源
 backend/         Express API、认证校验、模型执行和文件解析
 cloud-functions/ EdgeOne Node.js 云函数入口，复用 Express API
-database/        CloudBase 首次迁移与只读配置检查
-shared/          前后端共用的 Publishable Key 拼接逻辑
-scripts/         接口、数据库、浏览器验收与 Key 分段脚本
-docs/            开发部署、CloudBase、域名和功能说明
+database/        CloudBase 数据表、迁移、公共知识种子与只读配置检查
+shared/          公共法规条文库及前后端共用的 Publishable Key 拼接逻辑
+scripts/         接口、数据库、事务台测试，浏览器验收、法规导入与 Key 分段工具
+docs/            开发部署、CloudBase、域名、功能说明及项目升级规格
 edgeone.json     根目录安装、构建和云函数配置
 package-lock.json  npm 工作区共用锁文件
 ```
 
-完整目录、功能对应的源码和 API 见 [开发与部署](docs/dev.md)。其他说明包括 [当前功能](docs/product-features.md)、[域名配置](docs/domain.md)和[后续研发合规方案](docs/项目升级文档/小知合规方向-项目说明.md)。
+从 [开发与部署](docs/dev.md) 查找功能对应的源码和 API。从 [当前功能](docs/product-features.md) 查看事务台操作，从 [域名配置](docs/domain.md) 查看域名接入步骤。[项目升级文档](docs/项目升级文档/) 保存业务规格和知识库使用的权威来源清单。
 
 ## 验证
 
@@ -60,6 +61,7 @@ npm run build
 npm run test:edgeone
 npm run test:database
 npm run test:cloudbase-key
+npm run test:workbench
 ```
 
 测试使用模拟服务或本地内存数据库。发布后，应在目标环境用测试账号验收登录、数据隔离、文件下载和模型调用。

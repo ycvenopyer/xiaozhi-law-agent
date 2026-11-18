@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { requireCloud } from '@/lib/cloudbase'
+import { pgRequest, requireCloud } from '@/lib/cloudbase'
 
 const field =
   'mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary'
@@ -12,9 +12,16 @@ interface Props {
   setBusy: (value: boolean) => void
 }
 
+function usernameFormatError(name: string) {
+  if (Array.from(name).length > 256) return '登录用户名最长为 256 个字符。'
+  if (/[^A-Za-z0-9〇\p{Unified_Ideograph}]/u.test(name)) return '仅可使用中文汉字、英文字母和数字。'
+  return ''
+}
+
 export function LoginSettings({ email, busy, setBusy }: Props) {
   const [username, setUsername] = useState('')
   const [savedName, setSavedName] = useState('')
+  const [nameError, setNameError] = useState('')
   const [loading, setLoading] = useState(true)
   const [challenge, setChallenge] = useState(0)
   const [resendReady, setResendReady] = useState(false)
@@ -24,14 +31,13 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const verify = useRef<((token: string, next: string) => Promise<void>) | null>(null)
-
+  const name = username
+  const formatError = name !== savedName ? usernameFormatError(name) : ''
   useEffect(() => {
     let active = true
     async function load() {
-      const result = await requireCloud().auth().getUser()
+      const name = await pgRequest<string | null>('rpc/my_login_name', { method: 'POST', body: '{}' })
       if (!active) return
-      if (result.error) throw result.error
-      const name = result.data.user?.user_metadata?.username
       if (typeof name === 'string') {
         setSavedName(name)
         setUsername(name)
@@ -70,10 +76,15 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
 
   function saveUsername(event: FormEvent) {
     event.preventDefault()
+    if (!name || formatError || name === savedName) return
+    setNameError('')
     void run(async () => {
-      const name = username.trim()
-      const result = await requireCloud().auth().updateUser({ username: name })
-      if (result.error) throw new Error('用户名保存失败，请检查格式、是否已被占用，再重试。')
+      try {
+        await pgRequest('rpc/set_login_name', { method: 'POST', body: JSON.stringify({ p_name: name }) })
+      } catch (cause) {
+        setNameError(cause instanceof Error ? cause.message : '用户名保存失败，请重试。')
+        return
+      }
       setSavedName(name)
       setUsername(name)
       setNotice('用户名已保存。')
@@ -123,18 +134,33 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
             autoComplete="username"
             autoCapitalize="none"
             spellCheck={false}
+            aria-invalid={Boolean(formatError || nameError)}
+            aria-describedby="username-hint username-feedback"
             disabled={busy || loading}
             required
             value={username}
-            onChange={e => setUsername(e.target.value)}
+            onChange={e => {
+              setUsername(e.target.value)
+              setNameError('')
+              setNotice('')
+            }}
           />
         </label>
-        <p className="text-xs text-muted-foreground">
-          设置后可使用用户名和密码登录，也可继续使用绑定邮箱。
+        <p id="username-hint" className="text-xs text-muted-foreground">
+          支持 1–256 个汉字、英文字母或数字。完整名称须唯一，区分大小写。
+        </p>
+        <p
+          id="username-feedback"
+          aria-live="polite"
+          className={
+            formatError || nameError ? 'text-sm text-destructive' : 'text-xs text-muted-foreground'
+          }
+        >
+          {formatError || nameError}
         </p>
         <button
           className={button}
-          disabled={busy || loading || !username.trim() || username.trim() === savedName}
+          disabled={busy || loading || !name || !!formatError || name === savedName}
         >
           保存用户名
         </button>

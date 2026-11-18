@@ -2,6 +2,7 @@
 import json
 import re
 from pathlib import Path
+from qa_catalog import PUBLIC_CATALOG
 from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import sync_playwright
 
@@ -34,6 +35,9 @@ with sync_playwright() as p:
     page.on('pageerror', lambda error: errors.append(str(error)))
 
     def gateway(route):
+        if '/rpc/read_public_knowledge' in route.request.url:
+            route.fulfill(json=PUBLIC_CATALOG)
+            return
         if '/rpc/put_user_record' in route.request.url:
             body = route.request.post_data_json
             key = (body['p_kind'], body['p_id'])

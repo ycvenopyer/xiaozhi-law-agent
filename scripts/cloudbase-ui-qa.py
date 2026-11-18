@@ -1,6 +1,7 @@
 """Local UI smoke test with a mocked SDK and gateway; no real credentials/data."""
 import json
 from pathlib import Path
+from qa_catalog import PUBLIC_CATALOG
 from playwright.sync_api import sync_playwright
 
 OUT = Path(__file__).resolve().parents[1] / '.qa-artifacts'
@@ -21,7 +22,11 @@ const auth = {
     return result;
   },
   async getUser() {return service({op:'profile'});},
-  async updateUser({username}) {return service({op:'username', username});},
+  async setSession({access_token, refresh_token}) {
+    if (access_token !== 'qa-token' || refresh_token !== 'qa-refresh') return {error:{message:'Invalid token'}};
+    sessionStorage.setItem('qa-login','1');
+    return {error:null};
+  },
   async reauthenticate() {return {error:null,data:{updateUser:({nonce,password}) => service({op:'password',nonce,password})}};},
   async signOut() { sessionStorage.removeItem('qa-login'); }
 };
@@ -34,17 +39,17 @@ with sync_playwright() as p:
     page = context.new_page()
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
-    records = {}
+    conversation = dict(id='saved-session', title='云端对话测试', createdAt=1, updatedAt=1, messages=[])
+    records = {('sessions', conversation['id']): dict(kind='sessions', id=conversation['id'], payload=conversation, revision=1)}
     model_requests = []
     profile = {'username': '', 'password': None}
+    username_attempts = []
 
     def authentication(route):
         args = route.request.post_data_json
         op = args['op']
         error = None
-        if op == 'username':
-            profile['username'] = args['username']
-        elif op == 'password':
+        if op == 'password':
             if args['nonce'] == '654321':
                 profile['password'] = args['password']
             else:
@@ -56,7 +61,22 @@ with sync_playwright() as p:
         route.fulfill(json={'error':error, 'data':{'user':{'id':'qa-user','user_metadata':{'username':profile['username']}}}})
 
     def gateway(route):
+        if '/rpc/read_public_knowledge' in route.request.url:
+            route.fulfill(json=PUBLIC_CATALOG)
+            return
         request = route.request
+        if '/rpc/my_login_name' in request.url:
+            route.fulfill(json=profile['username'])
+            return
+        if '/rpc/set_login_name' in request.url:
+            name = request.post_data_json['p_name']
+            username_attempts.append(name)
+            if name == '已占用':
+                route.fulfill(status=409, json={'code':'23505'})
+            else:
+                profile['username'] = name
+                route.fulfill(json=name)
+            return
         if '/rpc/put_user_record' in request.url:
             body = request.post_data_json
             key = (body['p_kind'], body['p_id'])
@@ -75,6 +95,14 @@ with sync_playwright() as p:
             route.fulfill(json=list(records.values()))
 
     page.route('**/node_modules/.vite/deps/@cloudbase_js-sdk.js*', lambda route: route.fulfill(content_type='application/javascript', body=SDK))
+    def alias_login(route):
+        credentials = route.request.post_data_json
+        if credentials == {'username': profile['username'], 'password': profile['password']}:
+            route.fulfill(json={'access_token':'qa-token','refresh_token':'qa-refresh'})
+        else:
+            route.fulfill(status=401,json={'message':'密码登录失败，请核对用户名和密码。'})
+
+    page.route('**/api/auth/password', alias_login)
     page.route('**/qa-auth', authentication)
     page.route('https://*.api.tcloudbasegateway.com/**', gateway)
     page.route('**/api/auth/me', lambda route: route.fulfill(json={'id':'qa-user','email':'qa@example.test'}))
@@ -101,21 +129,25 @@ with sync_playwright() as p:
     print('Account text:', page.get_by_role('dialog').inner_text()[:500])
     assert not page.get_by_label('我允许第三方模型处理工作资料').is_checked()
     page.screenshot(path=str(OUT/'account-desktop.png'), full_page=True)
-    page.get_by_label('我确认这些本地资料属于当前账号，并同意上传至该账号。').check()
-    with page.expect_navigation(wait_until='networkidle'):
-        page.get_by_role('button', name='导入当前账号').click()
-    page.get_by_text('私人云端空间', exact=True).wait_for()
-    page.wait_for_load_state('networkidle')
-    assert ('sessions','old-session') in records
-    assert records[('sessions','old-session')]['payload']['messages'][0]['content'] == '旧记录测试内容'
+    assert not page.get_by_text('导入旧浏览器资料',exact=True).count()
+    assert ('sessions','old-session') not in records
     assert page.evaluate("localStorage.getItem('agent_sessions_v1')") is not None
-    page.get_by_role('button', name='账号菜单').click()
-    page.get_by_role('menuitem', name='设置', exact=True).click()
-    page.get_by_role('button', name='清除本地旧记录').wait_for()
     page.get_by_role('button', name='登录账号', exact=True).click()
-    page.get_by_label('登录用户名').fill('xiaozhi_qa')
-    page.get_by_role('button', name='保存用户名').click()
-    page.get_by_text('用户名已保存。', exact=True).wait_for()
+    user_field = page.get_by_label('登录用户名')
+    save_name = page.get_by_role('button', name='保存用户名')
+    for invalid in ('_bad', 'a b', '🙂', '知' * 257):
+        user_field.fill(invalid)
+        assert save_name.is_disabled() and user_field.get_attribute('aria-invalid') == 'true'
+    assert not username_attempts
+    for valid in ('yc','知','𠀀' * 256, '小知QA1'):
+        user_field.fill(valid)
+        save_name.click()
+        page.get_by_text('用户名已保存。', exact=True).wait_for()
+        assert profile['username'] == valid
+    user_field.fill('已占用')
+    save_name.click()
+    page.get_by_text('这个用户名已被占用，请换一个。').wait_for()
+    assert profile['username'] == '小知QA1'
     page.get_by_role('button', name='发送安全验证码').click()
     page.get_by_label('安全验证码', exact=True).fill('111111')
     page.get_by_label('新密码', exact=True).fill('Fixture-Test-2026')
@@ -151,22 +183,29 @@ with sync_playwright() as p:
     page.set_viewport_size({'width':390,'height':844})
     page.screenshot(path=str(OUT/'login-mobile.png'), full_page=True)
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
-    for identifier in ('qa@example.test', 'xiaozhi_qa'):
+    for identifier in ('qa@example.test', '小知QA1'):
         page.get_by_role('button', name='密码登录', exact=True).click()
         page.get_by_label('邮箱或用户名').fill(identifier)
         page.get_by_label('密码', exact=True).fill('wrong-password')
         page.get_by_role('button', name='登录', exact=True).click()
         page.get_by_role('alert').filter(has_text='密码登录失败').wait_for()
+        if identifier == '小知QA1':
+            page.get_by_label('邮箱或用户名').fill('小知qa1')
+            page.get_by_label('密码', exact=True).fill('Fixture-Test-2026')
+            with page.expect_response('**/api/auth/password') as rejected:
+                page.get_by_role('button', name='登录', exact=True).click()
+            assert rejected.value.status == 401
+            page.get_by_label('邮箱或用户名').fill(identifier)
         page.get_by_label('密码', exact=True).fill('Fixture-Test-2026')
         page.get_by_role('button', name='登录', exact=True).click()
         page.get_by_text('私人云端空间', exact=True).wait_for()
-        assert ('sessions','old-session') in records
+        assert ('sessions','saved-session') in records
         assert page.evaluate("!JSON.stringify([localStorage,sessionStorage]).includes('Fixture-Test-2026')")
         page.get_by_role('button', name='展开侧边栏', exact=True).click()
-        page.get_by_text('旧对话测试', exact=True).first.wait_for()
+        page.get_by_text('云端对话测试', exact=True).first.wait_for()
         page.get_by_role('button', name='账号菜单').click()
         page.get_by_role('menuitem', name='退出登录').click()
         page.get_by_role('heading', name='登录后，继续你的工作').wait_for()
     assert not errors, errors
-    print('PASS: OTP, username and email/password, verified password setup, privacy, import, logout and mobile layout')
+    print('PASS: OTP, username and email/password, verified password setup, privacy, no legacy import, logout and mobile layout')
     browser.close()

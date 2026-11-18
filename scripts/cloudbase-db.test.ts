@@ -21,8 +21,8 @@ test(`CloudBase SQL migration: ${schema.name}`, async t => {
     await db.exec(`
       CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;
       CREATE SCHEMA auth;
-      CREATE TABLE auth.users(id ${schema.idType} PRIMARY KEY);
-      INSERT INTO auth.users VALUES ('${userA}'),('${userB}');
+      CREATE TABLE auth.users(id ${schema.idType} PRIMARY KEY,email text, user_metadata jsonb);
+      INSERT INTO auth.users VALUES ('${userA}','a@example.test','{"username":"ycvenopyer"}'),('${userB}','b@example.test','{}');
       CREATE FUNCTION auth.uid() RETURNS ${schema.uidType} LANGUAGE sql STABLE AS
         $$ SELECT (current_setting('request.jwt.claims',true)::jsonb->>'sub')::${schema.uidType} $$;
       CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS
@@ -109,6 +109,62 @@ test(`CloudBase SQL migration: ${schema.name}`, async t => {
       assert.equal((await db.query(`DELETE FROM storage.objects WHERE id='file-a' RETURNING id`)).rows.length,0)
       await login(null,'anon')
       assert.equal((await db.query('SELECT * FROM storage.objects')).rows.length,0)
+    })
+    await t.test('exact login names, public catalog and private additions survive upgrades', async () => {
+      await db.exec('RESET ROLE')
+      const files = await Promise.all(['migrations/002_login_names.sql', 'migrations/003_public_knowledge.sql', 'seeds/public_knowledge.sql']
+        .map(path => readFile(new URL('../database/' + path, import.meta.url), 'utf8')))
+      for (const sql of files) await db.exec(sql)
+      const lookup = (await db.query<{lookup_key: string}>('SELECT lookup_key FROM xiaozhi_private.login_config')).rows[0].lookup_key
+      const name = async () => (await db.query<{name: string}>('SELECT public.my_login_name() AS name')).rows[0].name
+      const assign = (value: string) => db.query('SELECT public.set_login_name($1)', [value])
+      const resolve = async (value: string, key = lookup) => (await db.query<{target: {owner?: string}}>(
+        'SELECT public.resolve_login_name($1,$2) AS target', [value,key])).rows[0].target.owner
+      await login(userA)
+      assert.equal(await name(), 'ycvenopyer')
+      await login(userB)
+      assert.equal(await name(), '')
+      for (const value of ['yc', '知yc', 'yc知', '7', '𠀀'.repeat(256)]) await assign(value)
+      for (const value of ['', '𠀀'.repeat(257), 'a b', 'a%', 'y_c', '🙂']) {
+        await assert.rejects(assign(value), {code: '22023'})
+      }
+      await assign('yc')
+      await login(userA)
+      await assert.rejects(assign('yc'), {code: '23505'})
+      assert.equal(await name(), 'ycvenopyer')
+      await assign('YC')
+      await login(null, 'anon')
+      await assert.rejects(db.query('SELECT * FROM xiaozhi_private.login_config'), {code:'42501'})
+      await assert.rejects(assign('abc'), {code:'42501'})
+      await assert.rejects(resolve('YC','wrong'), {code:'42501'})
+      assert.equal(await resolve('YC'), userA)
+      assert.equal(await resolve('yc'), userB)
+      for (const value of ['Yc','y','ycvenopyer']) assert.equal(await resolve(value), undefined)
+      await assert.rejects(db.query('SELECT public.read_public_knowledge()'), {code:'42501'})
+      const catalog = async () => (await db.query<{items: {id: string; official?: object; kind: string}[]}>(
+        'SELECT public.read_public_knowledge() AS items')).rows[0].items
+      await login(userA)
+      const items = await catalog()
+      assert.equal(new Set(items.map(item => item.id)).size,158)
+      assert.equal(items.filter(item => item.official).length,144)
+      assert.equal(items.filter(item => item.kind === 'case').length,6)
+      await assert.rejects(db.exec('DELETE FROM public.knowledge_catalog'), {code:'42501'})
+      const privateRows = async () => (await db.query("SELECT id FROM public.user_records WHERE kind='knowledge'")).rows
+      await put('knowledge','private-a',{id:'private-a',title:'私有案例'},0)
+      await login(userB)
+      assert.deepEqual(await catalog(),items)
+      assert.deepEqual(await privateRows(),[])
+      await put('knowledge','private-b',{id:'private-b',title:'私有法条'},0)
+      await login(userA)
+      assert.deepEqual(await privateRows(),[{id:'private-a'}])
+      await db.exec('RESET ROLE')
+      await db.query("UPDATE public.knowledge_catalog SET entry=jsonb_set(entry,'{title}',to_jsonb('管理员修订'::text)) WHERE id=$1",[items[0].id])
+      for (const sql of files) await db.exec(sql)
+      await login(userA)
+      assert.equal(await name(),'YC')
+      assert.equal((await catalog()).length,158)
+      assert.equal((await db.query<{title:string}>("SELECT entry->>'title' AS title FROM public.knowledge_catalog WHERE id=$1",[items[0].id])).rows[0].title,'管理员修订')
+      assert.deepEqual(await privateRows(),[{id:'private-a'}])
     })
     await t.test('owner foreign key uses the auth column type and preserves account deletion cascade', async () => {
       await db.exec('RESET ROLE');

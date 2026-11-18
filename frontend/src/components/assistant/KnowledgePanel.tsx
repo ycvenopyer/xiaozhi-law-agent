@@ -91,6 +91,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
           </span>
           <button
             onClick={onClose}
+            aria-label="关闭知识库"
             className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X className="h-4 w-4" />
@@ -167,6 +168,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
                 <span className="text-[0.75rem] text-muted-foreground">类型</span>
                 <select
                   value={draft.kind}
+                  aria-label="条目类型"
                   onChange={(e) => setDraft({ ...draft, kind: e.target.value as KBKind })}
                   className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.8rem] outline-none"
                 >
@@ -228,20 +230,20 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
                   </span>
                   <span className="text-[0.85rem] font-medium leading-snug">{e.title}</span>
                   <div className="ml-auto flex shrink-0 gap-1">
-                    {!e.official && <button
+                    {!e.builtin && <button
                       onClick={() => startEdit(e)}
                       className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                       title="编辑"
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </button>}
-                    <button
+                    {!e.builtin && <button
                       onClick={() => remove(e.id)}
                       className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                       title="删除"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    </button>}
                   </div>
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">{status}{e.official && <> · {e.official.version} · {e.official.effective_date} 施行 · <a className="text-primary underline" href={e.official.source_url} target="_blank" rel="noreferrer">官方原文</a></>}</div>
@@ -270,7 +272,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
         </div>
 
         <div className="border-t border-border px-4 py-2 text-[0.7rem] text-muted-foreground">
-          公共法规随应用提供。个人条目和引用选择按账号同步至 CloudBase。
+          公共知识库 {entries.filter(item => item.builtin).length} 条 · 我的条目 {entries.filter(item => !item.builtin).length} 条。新增条目仅当前账号可见。
         </div>
       </aside>
     </div>

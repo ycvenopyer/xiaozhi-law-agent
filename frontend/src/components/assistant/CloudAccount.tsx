@@ -12,7 +12,6 @@ import { setTavilyKey } from '@/lib/tavily-key';
 import { cloud, cloudConfig, authHeaders, requireCloud } from '@/lib/cloudbase';
 import { clearCloudStore, exportRecovery, flushCloudStore, getPrivacy, getSyncStatus, hydrateCloudStore,
   loadCollection, saveCollection, subscribeSync } from '@/lib/cloud-store';
-import { clearLegacy, exportLegacy, importLegacy, previewLegacy } from '@/lib/legacy-import';
 import { downloadOriginal } from '@/lib/private-files';
 import type { AttachedFile } from '@/types/agent';
 
@@ -88,14 +87,17 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
     event.preventDefault(); setBusy(true); setError(''); setRetryAccount(false);
     try {
       if (mode === 'password') {
-        const login = identifier.trim();
-        const account = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(login) ? { email: login } : { username: login };
-        const result = await requireCloud().auth().signInWithPassword({ ...account, password });
-        if (result.error) {
-          const category = result.error.category;
-          if (category === 'SERVICE_ERROR') throw new Error('连接认证服务失败，请稍后重试。');
-          if (category === 'RATE_LIMITED') throw new Error('尝试次数过多，请稍后重试。');
-          throw new Error('密码登录失败，请核对账号和密码，或使用邮箱验证码登录。');
+        const auth = requireCloud().auth();
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier.trim())) {
+          const result = await auth.signInWithPassword({ email: identifier.trim(), password });
+          if (result.error) throw new Error(result.error.category === 'RATE_LIMITED' ? '尝试次数过多，请稍后重试。' : '密码登录失败，请核对邮箱和密码，或使用邮箱验证码登录。');
+        } else {
+          const response = await fetch('/api/auth/password', { method: 'POST', cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: identifier, password }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.message || '用户名登录失败，请重试。');
+          const session = await auth.setSession({ access_token: result.access_token, refresh_token: result.refresh_token });
+          if (session.error) throw new Error('登录状态建立失败，请重新登录。');
         }
         setPassword('');
       } else {
@@ -178,10 +180,6 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
   const [external, setExternal] = useState(getPrivacy);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [legacy, setLegacy] = useState<ReturnType<typeof previewLegacy>>([]);
-  const [confirmed, setConfirmed] = useState(false);
-  const [imported, setImported] = useState(() => loadCollection<{ id: string }>('settings').some(item => item.id === 'legacy-import'));
-  const [notice, setNotice] = useState('');
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const trigger = useRef<HTMLButtonElement>(null);
 
@@ -199,10 +197,8 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
   const status = sync.error ? '保存失败' : sync.pending ? '保存中…' : '云端已同步';
   const displayName = account.user.email || account.user.id;
   function openSettings() {
-    setLegacy(previewLegacy());
     setFiles(loadCollection<AttachedFile>('files'));
     setExternal(getPrivacy());
-    setConfirmed(false);
     setSection('privacy');
     setDialog('settings');
   }
@@ -239,7 +235,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
           <div><h3 className="font-medium">开始对话</h3><p className="text-muted-foreground">在设置里授权第三方模型处理，然后从输入框选择模型。检索法条和案例时，可通过知识库或普通附件提供参考材料。</p></div>
           <div><h3 className="font-medium">配置自己的模型</h3><p className="text-muted-foreground">从模型菜单打开「自定义模型」，填写厂商、接口地址、模型 ID 和 API Key，可先测试连通性。</p></div>
           <div><h3 className="font-medium">检索今日知产新闻</h3><p className="text-muted-foreground">在「设置 → 联网搜索」保存 Tavily API Key，然后到事务台检索当天的知产动态。</p></div>
-          <div><h3 className="font-medium">找回旧资料与附件</h3><p className="text-muted-foreground">在设置的「账号与隐私」中备份或导入旧浏览器资料，也可以下载已保存的文件原件。</p></div>
+          <div><h3 className="font-medium">下载已保存的附件</h3><p className="text-muted-foreground">在「设置 → 账号与隐私」中下载当前账号已保存的文件原件。</p></div>
         </div> : <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[9rem_minmax(0,1fr)] sm:grid-rows-1">
           <nav aria-label="设置分类" className="grid grid-cols-2 gap-1 border-b border-border bg-muted/30 p-2 sm:flex sm:flex-col sm:border-b-0 sm:border-r">
             {([
@@ -268,21 +264,9 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
                   });
                 }} />我允许第三方模型处理工作资料</label>
               </div>
-              <div className="mt-4 rounded-xl border border-border p-4">
-                <h3 className="text-sm font-medium">导入旧浏览器资料</h3>
-                <p className="mt-2 text-xs leading-6 text-muted-foreground">旧资料：{legacy.reduce((sum, item) => sum + item.count, 0)} 条。已有相同 ID 的云端记录会跳过；旧文档可能只有截断文本，不能恢复缺失的原件。建议先导出备份。</p>
-                <label className="mt-3 flex items-start gap-2 text-xs leading-5"><input type="checkbox" className="mt-1" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />我确认这些本地资料属于当前账号，并同意上传至该账号。</label>
-                <div className="mt-3 flex flex-wrap gap-2"><button className={button} onClick={exportLegacy}>导出本地备份</button><button className={button} disabled={!confirmed || disabled || busy || sync.pending || !!sync.error} onClick={() => void act(async () => {
-                  await flushCloudStore(); const count = await importLegacy();
-                  await saveCollection('settings', [{ id: 'legacy-import', completedAt: Date.now() }], false);
-                  setNotice(`已导入 ${count} 条记录，正在重新加载工作空间。`); setImported(true); location.reload();
-                })}>导入当前账号</button></div>
-                {imported && <div className="mt-3 flex flex-wrap gap-2"><button className={button} onClick={() => location.reload()}>重新加载并核对</button><button className={button} onClick={() => { if (window.confirm('确认已核对云端资料并导出备份？此操作会清除本浏览器的旧业务记录。')) { clearLegacy(); setLegacy(previewLegacy()); setNotice('已清理本地旧业务记录。'); } }}>清除本地旧记录</button></div>}
-              </div>
               <div className="mt-4 rounded-xl border border-border p-4"><h3 className="text-sm font-medium">已保存的文件原件</h3><p className="my-2 text-xs text-muted-foreground">文件通过私有存储权限验证后下载。</p><ul className="max-h-40 space-y-2 overflow-y-auto">{files.map(file => <li key={file.id} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate">{file.name}</span><button aria-label={`下载 ${file.name}`} disabled={busy} onClick={() => void act(() => downloadOriginal(file))}><Download className="h-4 w-4" /></button></li>)}</ul></div>
               {(error || sync.error) && <p role="alert" className="mt-3 text-sm text-destructive">{error || sync.error}</p>}
               {sync.error && <button className={`${button} mt-3`} onClick={exportRecovery}>导出未保存资料备份</button>}
-              {notice && <p role="status" className="mt-3 text-sm">{notice}</p>}
             </>}
           </div>
         </div>}

@@ -10,7 +10,7 @@ frontend/
     ├── pages/Index.tsx         工作空间状态、会话与模型请求
     ├── components/assistant/   登录、对话、侧边栏搜索、模型配置、事务台
     ├── components/ui/          对话框和下拉菜单
-    ├── lib/                    API 客户端、云端记录、附件、旧数据导入
+    ├── lib/                    API 客户端、云端记录、法规选择、专利 CSV 与报告导出
     └── types/agent.ts          对话、项目和模型类型
 backend/
 └── src/
@@ -23,11 +23,15 @@ backend/
         ├── system.ts           健康检查、版本和状态
         └── agent/              模型、SSE、授权、新闻搜索、文件解析
 cloud-functions/api/[[default]].ts     EdgeOne Node.js 函数入口
-database/migrations/001_cloudbase.sql  CloudBase 首次迁移
+database/migrations/                   基础数据、精确登录名、公共知识目录迁移
+database/seeds/public_knowledge.sql    158 条初始公共知识
 database/check_cloudbase.sql          云端结构与权限的只读检查
-shared/cloudbase-key.mjs              前后端共用的 Key 拼接
-scripts/                              接口、数据库和浏览器验收
-docs/                                 开发、云端、功能说明与研发合规规划
+shared/cloudbase-key.mjs              前后端共用的 Key 拼接，类型声明在同目录
+shared/law-library.json               生成公共种子用的法规版本、条文原文和来源
+scripts/                              自动化测试、浏览器验收、法规导入和 Key 分段
+docs/项目升级文档/                    知产业务规格、法学对接稿和权威来源清单
+edgeone.json                           安装命令、前端构建、函数时限和路由回退
+package.json / package-lock.json       两个 npm 工作区的命令与依赖版本
 ```
 
 前端使用 React、Vite 和 Tailwind CSS。业务记录和文件由浏览器通过 CloudBase 网关和 SDK 访问，CloudBase 根据当前登录用户执行访问策略。Express 处理同源 `/api`，对话生成先验证身份与外发授权，再向所选模型发送资料。回答经 SSE 返回并在完成前保存到 CloudBase。
@@ -38,8 +42,11 @@ docs/                                 开发、云端、功能说明与研发合
 | 搜索、查看和保存对话 | `ConversationSearch.tsx` 在浏览器搜索已载入的本账号对话。滚动由 `MessageList.tsx` 管理，保存由 `frontend/src/lib/cloud-store.ts` 管理 |
 | 内置与自定义模型 | 内置型号在 `backend/src/modules/agent/providers.ts`，厂商预设在 `frontend/src/lib/model-presets.ts`，自定义接口转发在 `backend/src/modules/agent/custom-provider.ts` |
 | 今日知产新闻 | `Workbench.tsx` 调用独立新闻接口，`backend/src/modules/agent/ip-news.ts` 向 Tavily 提交固定的公开检索词，并按北京时间筛选当天结果 |
+| 检索比对、侵权识别、合规提示、知产文书 | `IpWorkflow.tsx` 收集业务事实，`backend/src/modules/agent/workbench-report.ts` 校验结构化报告和条文引用 |
+| 专利 FTO 初筛 | `PatentScreen.tsx` 管理回填步骤，`frontend/src/lib/fto.ts` 解析 CSV、匹配特征与去重，`report-export.ts` 导出报告 |
+| 知识库 | `frontend/src/lib/knowledge.ts` 合并公共条文和个人条目，`law-sources.ts` 从升级文档的 Markdown 清单读取权威链接 |
 
-前端组件位于 `frontend/src/components/assistant/`。当前功能清单见 [产品功能](product-features.md)。事务台的业务表单、FTO 回填流程和法规库分别由 `IpWorkflow.tsx`、`PatentScreen.tsx` 和 `shared/law-library.json` 实现。业务规格集中在 [项目升级文档](项目升级文档/小知合规方向-项目说明.md)。
+表中界面组件位于 `frontend/src/components/assistant/`。当前功能清单见 [产品功能](product-features.md)。[法规权威链接清单](项目升级文档/知识产权常用法规库_权威链接清单.md) 是 Vite 的构建输入；更新或移动清单时要核对知识库面板的「权威来源」。
 
 ## 默认模型与自定义端点
 
@@ -83,6 +90,7 @@ docs/                                 开发、云端、功能说明与研发合
 | `POST /api/agent/chat` | 登录及模型外发授权，保存并流式返回模型回答 |
 | `POST /api/agent/files` | 登录后解析 multipart 文件，原件由客户端存入 CloudBase 私有桶 |
 | `POST /api/agent/custom-model/test` | 登录后向自定义端点发送固定短消息，测试流式响应 |
+| `POST /api/auth/password` | 按精确用户名登录，CloudBase 核验密码并签发会话 |
 | `POST /api/agent/ip-news` | 登录后提交当前用户的 `{ apiKey }`，由后端向 Tavily 查询当天的公开新闻 |
 | `POST /api/agent/extract-dossier` | 旧客户端兼容接口，仍要求登录和外发授权 |
 
@@ -90,7 +98,7 @@ docs/                                 开发、云端、功能说明与研发合
 
 业务报告在 `/api/agent/chat` 使用可选的 `workflow` 字段，保留原有认证、外发授权、会话锁和保存流程。服务端核对结构化输出与当前有效条文后才发送结果。`npm run test:workbench` 测试法条选择、跨年切换、引文校验和 CSV 初筛。
 
-法规库更新工具 `scripts/import-law-library.py` 使用 Python、requests、beautifulsoup4 和 PyMuPDF。对需要浏览器访问的官网，可从同一官方 URL 导出正文到临时目录，用 `--texts <目录>` 指定按来源 ID 命名的 `.txt`。合入前核对文号、施行日期、提取首尾和 PDF 跨页分段。
+法规库更新工具 `scripts/import-law-library.py` 使用 Python、requests、beautifulsoup4 和 PyMuPDF。对需要浏览器访问的官网，可从同一官方 URL 导出正文到临时目录，用 `--texts <目录>` 指定按来源 ID 命名的 `.txt`。合入前核对文号、施行日期、提取首尾和 PDF 跨页分段。运行 `npx tsx scripts/write-knowledge-seed.ts` 可重建初始化 SQL。已有公共 ID 的修订需要独立的数据库更新迁移，初始化脚本会跳过这些 ID。
 
 ## 验证命令
 
@@ -101,6 +109,7 @@ npm run build
 npm run test:edgeone
 npm run test:database
 npm run test:cloudbase-key
+npm run test:workbench
 npm run lint --workspace frontend
 npx tsc --noEmit --project backend/tsconfig.json --module esnext --moduleResolution bundler
 ```
@@ -115,4 +124,4 @@ python scripts/sidebar-ui-qa.py
 python scripts/assistant-ui-qa.py
 ```
 
-三个脚本分别覆盖登录与导入、项目与账号隔离，以及对话搜索、长对话滚动、事务台和模型配置。它们拦截云端、模型和新闻请求。截图存放在 Git 忽略的 `.qa-artifacts/`，构建产物在 `frontend/dist/`，依赖可从根锁文件重新安装。
+三个脚本分别覆盖验证码与密码登录、账号设置、公共知识库与个人新增资料，侧边栏项目和账号隔离，以及对话搜索、事务台和模型配置。它们拦截云端、模型和新闻请求。浏览器截图生成到 `.qa-artifacts/`，生产页面生成到 `frontend/dist/`。根目录的 `.gitignore` 管理本机产物，`.prettierrc` 为两个工作区提供相同的格式化规则。

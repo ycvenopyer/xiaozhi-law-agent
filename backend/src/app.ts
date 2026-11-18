@@ -11,6 +11,7 @@ import { httpLogger } from './middleware/logger'
 import { systemRouter } from './modules/system'
 import { agentRouter } from './modules/agent'
 import { requireIdentity, identity } from './modules/cloudbase'
+import { usernameLogin } from './modules/username-login'
 // ============================================
 // Add your domain module imports here
 // ============================================
@@ -45,6 +46,7 @@ export const createApp = (
 
   // API routes - System & Health
   app.use(env.API_PREFIX, systemRouter)
+  app.use(`${env.API_PREFIX}/auth`, usernameLogin)
   app.get(`${env.API_PREFIX}/auth/me`, requireIdentity, (_req, res) => {
     const user = identity(res)
     res.json({ id: user.id, email: user.email })

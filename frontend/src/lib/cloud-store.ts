@@ -1,5 +1,10 @@
 import { pgRequest } from './cloudbase';
 
+import type { KBEntry } from '../../../shared/knowledge';
+
+let publicKnowledge: KBEntry[] = [];
+export const loadPublicKnowledge = () => structuredClone(publicKnowledge);
+
 export type Collection = 'sessions' | 'dossiers' | 'knowledge' | 'deadlines' | 'conflicts' | 'settings' | 'files';
 export interface CloudRecord { kind: Collection; id: string; payload: Record<string, unknown>; revision: number; generation_id?: string | null }
 export interface SyncStatus { pending: boolean; error: string | null }
@@ -26,7 +31,7 @@ export function exportRecovery() {
 export function currentOwner() { return owner; }
 
 export function clearCloudStore() {
-  generation++; owner = ''; records.clear(); desired.clear(); pendingCount = 0; queue = Promise.resolve();
+  generation++; publicKnowledge = []; owner = ''; records.clear(); desired.clear(); pendingCount = 0; queue = Promise.resolve();
   emit({ pending: false, error: null });
 }
 
@@ -39,7 +44,10 @@ export async function hydrateCloudStore(userId: string) {
     loaded.push(...page);
     if (page.length < 100) break;
   }
+  const catalog = await pgRequest<KBEntry[]>('rpc/read_public_knowledge', { method: 'POST', body: '{}' });
+  if (!Array.isArray(catalog) || !catalog.length) throw new Error('公共知识库尚未初始化，请检查 CloudBase 迁移及种子数据。');
   if (epoch !== generation) return;
+  publicKnowledge = catalog;
   owner = userId;
   loaded.forEach(record => records.set(key(record.kind, record.id), record));
 }

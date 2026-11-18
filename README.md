@@ -9,11 +9,11 @@ XiaoZhi helps intellectual property practitioners review evidence, draft documen
 | Where | What you can do |
 | --- | --- |
 | Sidebar | Search titles and messages, and create, rename, pin, delete, or organize conversations into projects |
-| Account menu | Open Settings or Help, or sign out. Settings contains model consent, legacy data import, saved source files, and appearance |
+| Account menu | Open Settings or Help, or sign out. Settings covers usernames and passwords, model consent, web search, appearance, and saved files |
 | Top toolbar | Open the knowledge base or Workbench for IP comparisons, patent CSV screening, infringement and compliance reviews, documents, and today's IP news |
 | Composer | Attach files, research statutes or cases, draft or review contracts, and switch between built-in and custom models |
 
-Statute and case research uses the enabled knowledge base and supplied materials. For today's IP news, add your Tavily API key under Settings → Web Search, then search in the Workbench. It sends a fixed public query to Tavily and filters results by the current calendar day in Asia/Shanghai. Search uses your Tavily quota. Verify citations and drafts before relying on them. The old dossier interface has been retired. Legacy dossier records remain importable and are no longer attached to chat prompts by the current UI.
+Statute and case research uses the enabled knowledge base and supplied materials. For today's IP news, add your Tavily API key under Settings → Web Search, then search in the Workbench. It sends a fixed public query to Tavily and filters results by the current calendar day in Asia/Shanghai. Search uses your Tavily quota. Verify citations and drafts before relying on them.
 
 ## Local development
 
@@ -32,6 +32,7 @@ Open `http://localhost:5173`. Vite proxies `/api` to Express on port 3000. Cloud
 
 - The built-in Zhipu models are GLM-4.7, GLM-4.7-Flash, GLM-4.6V-Flash, and GLM-4.5-Air. Set `ZHIPU_API_KEY` on the backend to enable them. Verify availability with a request to the provider.
 - For a custom model, open the composer model menu and enter a provider, Base URL, API key, and model ID. You can test the connection before saving. Custom models require a public HTTPS endpoint with OpenAI-compatible streaming. Configurations are saved per account in the browser. The API key lasts for the current tab session and is cleared on sign-out.
+- PostgreSQL holds a shared catalog of 158 entries (144 versioned statute articles, 6 cases and 8 reference items). Users can add, edit and delete their own entries. All signed-in users can read the shared catalog. Login names accept 1–256 Chinese characters, ASCII letters or digits. The full name is unique and case-sensitive.
 - CloudBase manages login, PostgreSQL records, and private file storage. Appearance and model preferences stay in the browser. External model processing is disabled by default. Enabling it allows the selected provider to process conversation content, attachments, and enabled knowledge base entries.
 
 ## Repository layout
@@ -40,15 +41,15 @@ Open `http://localhost:5173`. Vite proxies `/api` to Express on port 3000. Cloud
 frontend/         React workspace, CloudBase client, and public assets
 backend/          Express API, authentication, models, and file parsing
 cloud-functions/  EdgeOne Node.js entry point for the shared Express app
-database/         CloudBase migration and read-only deployment checks
-shared/           Publishable Key handling shared by browser and server
-scripts/          Tests, browser checks, and the key-splitting helper
-docs/             Development, deployment, domains, and feature reference
+database/         CloudBase migrations, shared catalog seed and deployment checks
+shared/           Public law library and Publishable Key handling for browser and server
+scripts/          API, database and workbench tests, browser checks, law importer and key splitter
+docs/             Development, deployment, domains, features and IP workflow specifications
 edgeone.json      Install, build, and cloud function settings
 package-lock.json Shared npm workspace lockfile
 ```
 
-See the [source map and deployment guide](docs/dev.md), [current features](docs/product-features.md), and [CloudBase setup](docs/cloudbase.md). The [R&D compliance proposal](docs/项目升级文档/小知合规方向-项目说明.md) describes planned work.
+See the [source map and deployment guide](docs/dev.md), [current features](docs/product-features.md), and [CloudBase setup](docs/cloudbase.md). The [IP workflow specifications](docs/项目升级文档/) include the official source list used by the knowledge panel.
 
 ## Verification
 
@@ -57,6 +58,7 @@ npm run build
 npm run test:edgeone
 npm run test:database
 npm run test:cloudbase-key
+npm run test:workbench
 ```
 
 These checks use mocked services or an in-memory database. Verify authentication, isolation, file downloads, and model calls with test accounts after deploying.
