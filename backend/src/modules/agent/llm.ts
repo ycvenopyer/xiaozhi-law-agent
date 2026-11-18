@@ -180,10 +180,10 @@ function friendlyError(msg: string): string {
     return '暂时连不上模型服务（网络波动），请稍等几秒后重发一次';
   }
   if (/BodyStreamBuffer|UPSTREAM_IDLE_TIMEOUT|stream.*(abort|terminat)|premature close/i.test(msg)) {
-    return '模型输出流中途被掐断（免费模型不稳定）。已自动尝试续写；若内容不完整，请点"重新生成"再来一次';
+    return '模型输出中断。如果内容不完整，可以重新生成。';
   }
   if (/\b429\b|rate.?limit/i.test(msg)) {
-    return '免费模型暂时限流（或今日免费额度已用完）。可稍后重试、切换其他免费模型，或等北京时间次日早上8点额度重置';
+    return '模型服务暂时限流。请稍后重试，或在供应商控制台核对当前额度和限速。';
   }
   return `生成失败：${msg.slice(0, 200)}`;
 }

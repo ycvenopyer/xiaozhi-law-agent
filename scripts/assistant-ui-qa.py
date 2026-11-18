@@ -19,6 +19,7 @@ export default {init(){return {auth:()=>({
 with sync_playwright() as p:
     browser = p.chromium.launch(channel='msedge', headless=True)
     context = browser.new_context(viewport={'width':1440,'height':1000})
+    context.add_init_script("if (!localStorage.getItem('agent-model:qa-user')) localStorage.setItem('agent-model:qa-user', 'sf-qwen3')")
     page = context.new_page()
     page.set_default_timeout(8000)
     errors, requests, records = [], [], {}
@@ -28,8 +29,7 @@ with sync_playwright() as p:
     models = [
         dict(id='zhipu-glm',label='智谱 GLM-4.7',provider='智谱 AI',available=True,free=True,vision=False),
         dict(id='zhipu-vision',label='智谱 GLM-4.6V-Flash',provider='智谱 AI',available=True,free=True,vision=True),
-        dict(id='sf-qwen3',label='硅基流动 Qwen3-8B',provider='SiliconFlow',available=True,free=True,vision=False),
-        dict(id='qwen-free',label='Qwen 27B',provider='OpenRouter',available=False,free=True,vision=True),
+        dict(id='zhipu-air',label='智谱 GLM-4.5-Air',provider='智谱 AI',available=True,free=True,vision=False),
     ]
     page.on('pageerror', lambda error: errors.append(str(error)))
 
@@ -61,6 +61,8 @@ with sync_playwright() as p:
         row = records[('sessions', body['conversationId'])]
         assistant = next(message for message in row['payload']['messages'] if message['id'] == body['assistantMessageId'])
         assistant.update(content='Mocked answer '+str(len(requests)), status='complete')
+        if len(requests) == 6:
+            assistant['content'] += '\n\n' + '\n\n'.join(f'模拟长回答第 {line} 段' for line in range(60)) + '\n\n长对话末尾'
         row['revision'] += 1
         events = [dict(type='token',content=assistant['content']),dict(type='saved',record=row),dict(type='done')]
         route.fulfill(content_type='text/event-stream',body=''.join('data: '+json.dumps(event,ensure_ascii=False)+'\n\n' for event in events))
@@ -92,14 +94,14 @@ with sync_playwright() as p:
     for title in ['检索法条','检索案例','合同起草（审核）']:
         assert main.get_by_role('button',name=title,exact=True).count() == 1
 
-    # Model menu, retry, disabled providers and explicit selection remain intact.
+    # Retry the catalogue, replace the retired selection, and select another Zhipu model.
     page.get_by_role('button',name='切换模型：选择模型',exact=True).click()
     page.get_by_role('menuitem',name='重新加载').click()
     page.get_by_role('menu').wait_for(state='hidden')
     page.get_by_role('button',name='切换模型：智谱 GLM-4.7',exact=True).click()
     menu = page.get_by_role('menu')
-    assert menu.get_by_role('menuitemradio',name='Qwen 27B').get_attribute('aria-disabled') == 'true'
-    menu.get_by_role('menuitemradio',name='硅基流动 Qwen3-8B',exact=True).click()
+    assert menu.get_by_role('menuitemradio').count() == len(models)
+    menu.get_by_role('menuitemradio',name='智谱 GLM-4.5-Air',exact=True).click()
     page.screenshot(path=str(OUT/'assistant-home-desktop.png'),full_page=True)
 
     # The restored form still respects account opt-out, including article-only queries.
@@ -114,10 +116,10 @@ with sync_playwright() as p:
 
     def wait_saved(count):
         page.wait_for_function('() => !document.querySelector(\'button[title="停止生成"]\')')
-        page.get_by_role('button',name='切换模型：硅基流动 Qwen3-8B',exact=True).wait_for(state='visible')
-        page.wait_for_function('() => [...document.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === "切换模型：硅基流动 Qwen3-8B" && !b.disabled)')
+        page.get_by_role('button',name='切换模型：智谱 GLM-4.5-Air',exact=True).wait_for(state='visible')
+        page.wait_for_function('() => [...document.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === "切换模型：智谱 GLM-4.5-Air" && !b.disabled)')
         assert len(requests) == count
-        assert requests[-1]['model'] == 'sf-qwen3'
+        assert requests[-1]['model'] == 'zhipu-air'
         assert 'skillId' not in requests[-1] and 'skillVersion' not in requests[-1]
         assert any(m.get('content') == 'Mocked answer '+str(count) for row in records.values() if row['kind']=='sessions' for m in row['payload']['messages'])
 
@@ -166,13 +168,23 @@ with sync_playwright() as p:
     page.get_by_role('button',name='事务台',exact=True).click()
     workbench = page.get_by_role('complementary',name='事务台')
     workbench.get_by_role('button',name='知产新闻',exact=True).click()
-    assert workbench.get_by_role('button',name='整理知产新闻',exact=True).is_disabled()
-    workbench.get_by_label('新闻或公告原文').fill('测试新闻：某机构发布知识产权公告。来源：测试发布平台。日期：2026-11-17。')
+    assert not workbench.get_by_role('button',name='期限台账',exact=True).count()
+    assert not workbench.get_by_role('button',name='利益冲突',exact=True).count()
+    def news(route):
+        assert route.request.post_data_json == {'model': 'zhipu-air'}
+        route.fulfill(json={'date':'2026-11-18','articles':[
+            {'title':'今日专利公告','url':'https://example.test/latest','source':'示例来源','summary':'示例摘要'}
+        ]})
+    page.route('**/api/agent/ip-news', news)
+    workbench.get_by_role('button',name='检索今日新闻',exact=True).click()
+    article = workbench.get_by_role('link',name='今日专利公告')
+    assert article.get_attribute('href') == 'https://example.test/latest'
+    assert len(requests) == 4
     page.screenshot(path=str(OUT/'assistant-news-desktop.png'),full_page=True)
-    workbench.get_by_role('button',name='整理知产新闻',exact=True).click()
+    workbench.get_by_role('button',name='文件起草',exact=True).click()
+    workbench.locator('textarea:visible').fill('请发送本周商标案件的进展摘要。')
+    workbench.get_by_role('button',name='生成邮件草稿',exact=True).click()
     wait_saved(5)
-    assert '测试新闻' in requests[-1]['messages'][-1]['content']
-    assert '不得宣称已获取今日最新新闻' in requests[-1]['messages'][-1]['content']
     workbench.get_by_role('button',name='关闭事务台').click()
 
     assert not main.get_by_role('button', name='卷宗', exact=True).count()
@@ -200,24 +212,42 @@ with sync_playwright() as p:
         picker = page.get_by_role('button', name='切换模型：'+label, exact=True)
         picker.click()
         page.get_by_role('menuitem', name='自定义模型', exact=True).click()
-        return page.get_by_role('dialog', name='自定义模型')
+        return page.get_by_role('dialog', name=re.compile('^(添加模型|编辑模型|自定义模型)$'))
 
-    custom = open_custom('硅基流动 Qwen3-8B')
-    custom.get_by_label('厂商预设').select_option('SiliconFlow')
-    assert custom.get_by_label('Base URL').input_value() == 'https://api.siliconflow.cn/v1'
-    custom.get_by_label('厂商预设').select_option('')
+    custom = open_custom('智谱 GLM-4.5-Air')
+    supplier = custom.get_by_label('供应商', exact=True)
+    assert supplier.locator('option').all_text_contents() == [
+        '智谱 AI','DeepSeek','月之暗面','腾讯混元','阿里千问','小米 MiMo','阶跃星辰','自定义供应商']
+    page.screenshot(path=str(OUT/'custom-model-preset-desktop.png'), animations='disabled')
+    page.set_viewport_size({'width':390,'height':844})
+    model_bounds = custom.bounding_box()
+    assert model_bounds and model_bounds['x'] >= 0 and model_bounds['x'] + model_bounds['width'] <= 390
+    assert custom.get_by_role('button', name='保存', exact=True).is_visible()
+    page.screenshot(path=str(OUT/'custom-model-preset-mobile.png'), animations='disabled')
+    page.set_viewport_size({'width':1440,'height':1000})
+    supplier.select_option('DeepSeek')
+    assert custom.get_by_label('模型名称', exact=True).input_value() == 'deepseek-flash'
+    custom.get_by_text('高级选项', exact=True).click()
+    assert custom.get_by_label('Base URL').input_value() == 'https://api.deepseek.com'
+    custom.get_by_label('模型名称', exact=True).select_option('')
+    custom.get_by_label('模型 ID', exact=True).fill('manual-model')
+    supplier.select_option('')
     custom.get_by_label('厂商名称').fill('测试厂商')
     custom.get_by_label('Base URL').fill('https://api.example.test/v1/chat/completions')
     custom.get_by_label('API Key', exact=True).fill('synthetic-user-key')
     custom.get_by_label('模型 ID').fill('test-model')
+    custom.get_by_role('button', name='显示 API Key', exact=True).click()
+    assert custom.get_by_label('API Key', exact=True).get_attribute('type') == 'text'
+    custom.get_by_role('button', name='隐藏 API Key', exact=True).click()
+    custom.get_by_text('高级选项', exact=True).click()
     custom.get_by_label('显示名称').fill('测试模型')
     custom.get_by_label('支持图片输入').check()
     page.screenshot(path=str(OUT/'custom-model-desktop.png'), animations='disabled')
-    custom.get_by_role('button', name='连通测试').click()
+    custom.get_by_role('button', name='测试连接').click()
     custom.get_by_role('status').filter(has_text='连通测试通过').wait_for()
     assert connections == [dict(baseUrl='https://api.example.test/v1', model='test-model',
                                 apiKey='synthetic-user-key', vision=True, tools=False)]
-    custom.get_by_role('button', name='保存并选中').click()
+    custom.get_by_role('button', name='保存', exact=True).click()
     page.keyboard.press('Escape')
     custom.wait_for(state='hidden')
     page.reload(wait_until='networkidle')
@@ -225,6 +255,19 @@ with sync_playwright() as p:
     main.locator('textarea').fill('使用自定义模型生成测试回答')
     main.get_by_role('button', name='发送', exact=True).click()
     page.get_by_text('Mocked answer 6', exact=True).wait_for()
+    scroll_area = page.locator('[aria-label="对话消息"]')
+    at_end = 'el => el.scrollHeight - el.clientHeight - el.scrollTop < 2'
+    scroll_area.scroll_into_view_if_needed()
+    scroll_area.evaluate('el => el.scrollTop = 0')
+    page.get_by_role('button', name='跳到底部').click()
+    assert scroll_area.evaluate(at_end)
+    assert scroll_area.get_by_text('长对话末尾', exact=True).is_visible()
+    page.get_by_role('button',name='搜索对话',exact=True).click()
+    search = page.get_by_role('dialog',name='搜索对话')
+    search.get_by_role('searchbox').fill('长对话末尾')
+    search.get_by_role('status').filter(has_text='1 条匹配').wait_for()
+    search.get_by_role('button', name=re.compile('长对话末尾')).click()
+    search.wait_for(state='hidden')
     assert requests[-1]['model'].startswith('custom-')
     assert requests[-1]['customModel'] == connections[0]
     assert 'synthetic-user-key' not in json.dumps(list(records.values()))
@@ -232,7 +275,7 @@ with sync_playwright() as p:
     custom = open_custom('测试模型')
     custom.get_by_role('button', name='编辑 测试模型').click()
     custom.get_by_label('Base URL').fill('https://other.example.test/v1')
-    custom.get_by_role('button', name='保存并选中').click()
+    custom.get_by_role('button', name='保存', exact=True).click()
     custom.get_by_role('alert').filter(has_text='重新填写 Key').wait_for()
     custom.get_by_role('button', name='返回模型列表').click()
     page.once('dialog', lambda dialog: dialog.accept())

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { runAgent, extractDossier, streamCompletions } from './llm';
 import { customModelSchema, customProvider } from './custom-provider';
 import { MODEL_REGISTRY, listProviders } from './providers';
+import { findIpNews } from './ip-news';
 import { upload, parseFile } from './files';
 import { identity, recordRpc, type UserRecord } from '../cloudbase';
 import { requireModelConsent } from './privacy';
@@ -16,9 +17,12 @@ const messageSchema = z.object({
   role: z.enum(['user', 'assistant']), content: z.string(),
   images: z.array(z.string().startsWith('data:image/')).max(8).optional(),
 });
-const chatSchema = z.object({
-  messages: z.array(messageSchema).min(1).max(60), model: z.string(),
+const modelSchema = z.object({
+  model: z.string(),
   customModel: customModelSchema.optional(),
+});
+const chatSchema = modelSchema.extend({
+  messages: z.array(messageSchema).min(1).max(60),
   knowledge: z.string().optional(), dossier: z.string().optional(),
   conversationId: z.string().min(1).max(200), assistantMessageId: z.string().min(1).max(200),
 });
@@ -31,6 +35,30 @@ function selectedModel(id: string, hasImages: boolean, custom?: z.infer<typeof c
   if (hasImages && !model.vision) throw new AppError(400, '图片分析需要选择支持视觉的模型，不会自动切换供应商。');
   return model;
 }
+
+agentRouter.post('/ip-news', async (req, res) => {
+  const parsed = modelSchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, '请先选择模型。');
+  const provider = selectedModel(parsed.data.model, false, parsed.data.customModel);
+  await requireModelConsent(identity(res).token);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timer = setTimeout(abort, 45_000);
+  res.once('close', abort);
+  try {
+    const result = await findIpNews(provider, controller.signal);
+    if (!res.destroyed) return res.set('Cache-Control', 'no-store').json(result);
+  } catch (error) {
+    if (res.destroyed) return undefined;
+    if (error instanceof AppError) throw error;
+    if (controller.signal.aborted) throw new AppError(504, '新闻搜索超时，请稍后重试。');
+    throw new AppError(502, '暂时无法获取实时新闻，请稍后重试。');
+  } finally {
+    clearTimeout(timer);
+    res.off('close', abort);
+  }
+  return undefined;
+});
 
 agentRouter.post('/custom-model/test', async (req, res) => {
   const parsed = customModelSchema.safeParse(req.body);

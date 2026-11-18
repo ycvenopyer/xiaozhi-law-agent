@@ -27,18 +27,8 @@ const envSchema = z.object({
   LLM_TEMPERATURE: z.string().transform(Number).default('0.7'),
   LLM_MAX_TOKENS: z.string().transform(Number).default('2000'),
 
-  // OpenRouter key — unlocks free models (Qwen 14B / Llama 8B) and other
-  // OpenAI-compatible models. Leave blank to use only DeepSeek.
-  OPENROUTER_API_KEY: z.string().optional(),
-
-  // Zhipu BigModel (智谱) — Chinese GLM models, free tier GLM-4.7-Flash
-  // (200K context, no daily limit, 1 concurrent). Sign up at open.bigmodel.cn.
+  // Key for the built-in Zhipu models.
   ZHIPU_API_KEY: z.string().optional(),
-
-  // SiliconFlow (硅基流动) — 1000 RPM free tier, Chinese open-source models
-  // (Qwen3-8B, GLM-4-9B, DeepSeek-R1-Distill-Qwen-7B). Sign up at
-  // cloud.siliconflow.cn (phone + ID verification, no credit card).
-  SILICONFLOW_API_KEY: z.string().optional(),
 })
 
 const parseEnv = () => {

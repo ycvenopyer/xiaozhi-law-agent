@@ -1,37 +1,27 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  CalendarClock,
   ClipboardList,
   FileText,
-  Users,
   X,
-  Plus,
-  Trash2,
   Copy,
   Check,
   Loader2,
   Newspaper,
+  ArrowUpRight,
+  Search,
 } from 'lucide-react';
-import {
-  loadDeadlines,
-  saveDeadlines,
-  daysLeft,
-  urgencyClass,
-  DEADLINE_TYPES,
-  loadConflicts,
-  saveConflicts,
-  screenConflicts,
-  type Deadline,
-  type ConflictMatter,
-} from '@/lib/workbench';
+import type { IpNews } from '@/lib/agent-client';
 
-type Tab = 'deadline' | 'doc' | 'news' | 'conflict';
+type Tab = 'doc' | 'news';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   /** 调用助理生成文本，实时回传 token。 */
   onGenerate: (prompt: string, onToken: (text: string) => void) => Promise<string>;
+  onSearchNews: (signal: AbortSignal) => Promise<IpNews>;
+  modelLabel: string;
+  workspaceBusy: boolean;
 }
 
 type DocType = 'email' | 'warning' | 'lawyer';
@@ -48,11 +38,11 @@ const EMAIL_SUBTYPES = [
   { id: 'generic', name: '通用商务邮件' },
 ];
 
-export function Workbench({ open, onClose, onGenerate }: Props) {
-  const [tab, setTab] = useState<Tab>('deadline');
+export function Workbench({ open, onClose, onGenerate, onSearchNews, modelLabel, workspaceBusy }: Props) {
+  const [tab, setTab] = useState<Tab>('news');
 
   return (
-    <div className={`fixed inset-0 z-40 ${open ? '' : 'pointer-events-none'}`} aria-hidden={!open}>
+    <div className={`fixed inset-0 z-40 ${open ? '' : 'pointer-events-none'}`} aria-hidden={!open} inert={!open}>
       <div
         className={`absolute inset-0 bg-black/30 transition-opacity ${open ? 'opacity-100' : 'opacity-0'}`}
         onClick={onClose}
@@ -75,98 +65,82 @@ export function Workbench({ open, onClose, onGenerate }: Props) {
           </button>
         </div>
 
-        <div className="flex border-b border-border text-[0.8rem]">
-          <TabButton active={tab === 'deadline'} onClick={() => setTab('deadline')} icon={<CalendarClock className="h-3.5 w-3.5" />}>
-            期限台账
+        <div className="flex shrink-0 border-b border-border text-[0.8rem]">
+          <TabButton active={tab === 'news'} onClick={() => setTab('news')} icon={<Newspaper className="h-3.5 w-3.5" />}>
+            知产新闻
           </TabButton>
           <TabButton active={tab === 'doc'} onClick={() => setTab('doc')} icon={<FileText className="h-3.5 w-3.5" />}>
             文件起草
           </TabButton>
-          <TabButton active={tab === 'news'} onClick={() => setTab('news')} icon={<Newspaper className="h-3.5 w-3.5" />}>
-            知产新闻
-          </TabButton>
-          <TabButton active={tab === 'conflict'} onClick={() => setTab('conflict')} icon={<Users className="h-3.5 w-3.5" />}>
-            利益冲突
-          </TabButton>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          {tab === 'deadline' && <DeadlineTab />}
-          {tab === 'doc' && <DocTab onGenerate={onGenerate} />}
-          {tab === 'news' && <NewsTab onGenerate={onGenerate} />}
-          {tab === 'conflict' && <ConflictTab onGenerate={onGenerate} />}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
+          <div hidden={tab !== 'news'}><NewsTab onSearchNews={onSearchNews} modelLabel={modelLabel} workspaceBusy={workspaceBusy} /></div>
+          <div hidden={tab !== 'doc'}><DocTab onGenerate={onGenerate} /></div>
         </div>
       </aside>
     </div>
   );
 }
 
-function NewsTab({ onGenerate }: Pick<Props, 'onGenerate'>) {
-  const [source, setSource] = useState('');
-  const [result, setResult] = useState('');
+function NewsTab({ onSearchNews, modelLabel, workspaceBusy }: Pick<Props, 'onSearchNews' | 'modelLabel' | 'workspaceBusy'>) {
+  const [result, setResult] = useState<IpNews | null>(null);
+  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
 
-  async function generate() {
-    if (busy || !source.trim()) return;
+  async function search() {
+    if (request.current || workspaceBusy) return;
+    const controller = new AbortController();
+    request.current = controller;
     setBusy(true);
-    setResult('');
-    setCopied(false);
+    setError('');
+    setResult(null);
     try {
-      await onGenerate(`请整理以下知识产权新闻或公告正文，形成供承办律师阅读的简报：
-1. 仅依据下面的新闻材料，按立法政策、典型案例、行业动态分类。
-2. 每则列出标题、原文中提供的来源与发布日期、事件要点和可能的业务影响；缺少的来源或日期标为“未提供”。
-3. 区分材料明确陈述的事实与分析判断，说明需要进一步核实的内容，不编造新闻、案号、日期或链接。
-4. 当前不提供网页搜索，不得宣称已获取今日最新新闻。
-
-【新闻材料】
-${source.trim()}
-【新闻材料结束】`, setResult);
-    } catch (error) {
-      setResult('⚠️ ' + ((error as Error).message || '整理失败'));
+      const news = await onSearchNews(controller.signal);
+      if (!controller.signal.aborted) setResult(news);
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '新闻搜索失败，请重试。');
     } finally {
-      setBusy(false);
+      request.current = null;
+      if (!controller.signal.aborted) setBusy(false);
     }
   }
 
+  const today = result?.date || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', dateStyle: 'short' }).format(new Date());
+
   return (
-    <div className="space-y-3">
-      <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
-        粘贴新闻或公告正文，整理事件要点、来源与业务影响。当前不提供网页搜索，请一并提供标题、发布日期和来源链接。
-      </p>
-      <label className="block space-y-1.5 text-[0.76rem]">
-        <span>新闻或公告原文</span>
-        <textarea
-          value={source}
-          onChange={(event) => setSource(event.target.value)}
-          rows={9}
-          placeholder="粘贴新闻、公告或典型案例发布稿…"
-          className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-2 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-      </label>
-      <button
-        onClick={() => void generate()}
-        disabled={busy || !source.trim()}
-        className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[0.8rem] text-primary-foreground hover:opacity-90 disabled:opacity-40"
-      >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Newspaper className="h-3.5 w-3.5" />}
-        {busy ? '整理中…' : '整理知产新闻'}
-      </button>
-      {result && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-[0.74rem]">
-            <span className="font-medium">新闻简报</span>
-            <button
-              onClick={() => { void navigator.clipboard?.writeText(result); setCopied(true); }}
-              className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground hover:text-foreground"
-            >
-              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-              {copied ? '已复制' : '复制'}
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 p-3 font-sans text-[0.82rem] leading-relaxed">{result}</pre>
+    <div className="space-y-4">
+      <section className="rounded-xl border border-border bg-primary/[0.04] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">今日知产新闻</h2>
+          <time className="tabular-nums text-xs text-muted-foreground" dateTime={today}>{today} · 北京时间</time>
         </div>
-      )}
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">检索当天发布的专利、商标、版权及知识产权政策动态，附原文链接。</p>
+        <p className="mt-2 break-words text-xs text-muted-foreground">当前模型：{modelLabel}。联网搜索可能由供应商单独计费。</p>
+        <button type="button" onClick={() => void search()} disabled={busy || workspaceBusy}
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-45">
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+          {busy ? '正在检索…' : '检索今日新闻'}
+        </button>
+      </section>
+      {error && <p role="alert" className="rounded-lg border border-destructive/25 p-3 text-sm leading-6 text-destructive">{error}</p>}
+      {result && <div className="space-y-3">
+        <p role="status" className="text-xs text-muted-foreground">
+          {result.articles.length ? `找到 ${result.articles.length} 条当天发布的消息` : '本次未找到发布日期为今天的知产新闻。'}
+        </p>
+        {result.articles.map(article => (
+          <article key={article.url} className="rounded-xl border border-border p-3.5">
+            <span className="text-xs text-muted-foreground">{article.source} · {result.date}</span>
+            <a href={article.url} target="_blank" rel="noreferrer" className="mt-1.5 flex items-start justify-between gap-2 text-sm font-semibold leading-6 hover:text-primary">
+              <span className="break-words">{article.title}</span>
+              <ArrowUpRight className="mt-1 size-4 shrink-0 text-primary" />
+            </a>
+            {article.summary && <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">{article.summary}</p>}
+          </article>
+        ))}
+      </div>}
     </div>
   );
 }
@@ -196,154 +170,6 @@ function TabButton({
     </button>
   );
 }
-
-/* ----------------------------- 期限台账 ----------------------------- */
-
-function DeadlineTab() {
-  const [list, setList] = useState<Deadline[]>(() => loadDeadlines());
-  const [caseName, setCaseName] = useState('');
-  const [type, setType] = useState(DEADLINE_TYPES[0]);
-  const [dueDate, setDueDate] = useState('');
-  const [note, setNote] = useState('');
-
-  function persist(next: Deadline[]) {
-    setList(next);
-    saveDeadlines(next);
-  }
-
-  function add() {
-    if (!caseName.trim() || !dueDate) return;
-    const item: Deadline = {
-      id: crypto.randomUUID(),
-      caseName: caseName.trim(),
-      matter: '',
-      type,
-      dueDate,
-      note: note.trim(),
-      done: false,
-    };
-    persist([...list, item].sort((a, b) => a.dueDate.localeCompare(b.dueDate)));
-    setNote('');
-    setDueDate('');
-  }
-
-  function toggle(id: string) {
-    persist(list.map((d) => (d.id === id ? { ...d, done: !d.done } : d)));
-  }
-
-  function remove(id: string) {
-    persist(list.filter((d) => d.id !== id));
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
-        登记每个案件的法定期限节点。漏期可能直接导致失权，请如实填写，系统按剩余天数高亮临期项。
-      </p>
-
-      <div className="space-y-2 rounded-lg border border-border p-3">
-        <input
-          value={caseName}
-          onChange={(e) => setCaseName(e.target.value)}
-          placeholder="案件 / 当事人（如：A公司诉B公司商标侵权案）"
-          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-        <div className="flex gap-2">
-          <select
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-            className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-          >
-            {DEADLINE_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-          <input
-            type="date"
-            value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
-            className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-          />
-        </div>
-        <input
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="备注（如：限15日内提交答辩状）"
-          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-        <button
-          onClick={add}
-          disabled={!caseName.trim() || !dueDate}
-          className="flex w-full items-center justify-center gap-1 rounded-md bg-primary px-3 py-1.5 text-[0.8rem] text-primary-foreground hover:opacity-90 disabled:opacity-40"
-        >
-          <Plus className="h-3.5 w-3.5" /> 添加期限
-        </button>
-      </div>
-
-      {list.length === 0 ? (
-        <p className="py-6 text-center text-[0.78rem] text-muted-foreground">还没有期限记录</p>
-      ) : (
-        <ul className="space-y-2">
-          {list.map((d) => {
-            const left = daysLeft(d.dueDate);
-            const leftText =
-              left === null
-                ? '日期无效'
-                : d.done
-                ? '已完成'
-                : left < 0
-                ? `已逾期 ${Math.abs(left)} 天`
-                : `剩余 ${left} 天`;
-            return (
-              <li
-                key={d.id}
-                className={`flex items-start gap-2 rounded-lg border border-border p-2.5 ${
-                  d.done ? 'opacity-60' : ''
-                }`}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[0.66rem] text-primary">
-                      {d.type}
-                    </span>
-                    <span className="truncate text-[0.82rem] font-medium">{d.caseName}</span>
-                  </div>
-                  {d.note && (
-                    <div className="mt-0.5 truncate text-[0.74rem] text-muted-foreground">{d.note}</div>
-                  )}
-                  <div className="mt-0.5 text-[0.72rem] text-muted-foreground">
-                    {d.dueDate} · <span className={urgencyClass(d)}>{leftText}</span>
-                  </div>
-                </div>
-                <button
-                  onClick={() => toggle(d.id)}
-                  className={`rounded px-1.5 py-0.5 text-[0.68rem] ${
-                    d.done
-                      ? 'bg-emerald-500/10 text-emerald-500'
-                      : 'border border-border text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  {d.done ? '已办' : '标记'}
-                </button>
-                <button
-                  onClick={() => remove(d.id)}
-                  className="rounded p-1 text-muted-foreground hover:text-destructive"
-                  title="删除"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-/* ----------------------------- 文件起草助手 ----------------------------- */
 
 function DocTab({ onGenerate }: { onGenerate: Props['onGenerate'] }) {
   const [docType, setDocType] = useState<DocType>('email');
@@ -506,256 +332,6 @@ ${info}`;
           </pre>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ----------------------------- 利益冲突审查 ----------------------------- */
-
-function ConflictTab({ onGenerate }: { onGenerate: Props['onGenerate'] }) {
-  const [list, setList] = useState<ConflictMatter[]>(() => loadConflicts());
-  const [matter, setMatter] = useState('');
-  const [client, setClient] = useState('');
-  const [adverse, setAdverse] = useState('');
-  const [status, setStatus] = useState<'active' | 'closed'>('active');
-  const [note, setNote] = useState('');
-
-  const [newClient, setNewClient] = useState('');
-  const [newAdverse, setNewAdverse] = useState('');
-  const [brief, setBrief] = useState('');
-  const [result, setResult] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  function persist(next: ConflictMatter[]) {
-    setList(next);
-    saveConflicts(next);
-  }
-
-  function add() {
-    if (!client.trim() || !adverse.trim()) return;
-    const item: ConflictMatter = {
-      id: crypto.randomUUID(),
-      matter: matter.trim() || '（未命名事项）',
-      client: client.trim(),
-      adverse: adverse.trim(),
-      status,
-      note: note.trim(),
-    };
-    persist([...list, item]);
-    setMatter('');
-    setClient('');
-    setAdverse('');
-    setNote('');
-  }
-
-  function remove(id: string) {
-    persist(list.filter((d) => d.id !== id));
-  }
-
-  const quick = screenConflicts(newClient, newAdverse, list);
-
-  function buildPrompt(): string {
-    const roster = list.length
-      ? list
-          .map(
-            (m, i) =>
-              `${i + 1}. 事项：${m.matter}｜委托方：${m.client}｜相对方：${m.adverse}｜状态：${m.status === 'active' ? '进行中' : '已结案'}${m.note ? '｜备注：' + m.note : ''}`
-          )
-          .join('\n')
-      : '（暂无已代理事项，请仅基于一般规则评估并提示需补充台账）';
-    return `你是律师事务所的利益冲突审查助理。请基于以下「已代理事项清单」与「拟新接事项」进行利益冲突审查，要求：
-1. 先复述已代理事项清单（委托方 / 相对方 / 状态）；
-2. 将拟新接事项的委托方与相对方，分别与清单中的委托方、相对方逐一比对；
-3. 识别以下典型冲突并明确标注：
-   - 相对冲突：新委托方曾作为清单中某事项的相对方（曾与我们对立）；
-   - 当事人冲突：新相对方是清单中某事项的委托方（我们将与现有客户对立）；
-   - 同方重复：新委托方已是现有委托方（注意多重代理 / concurrent representation 风险）；
-   - 关联方重叠：名称高度相似或疑似关联公司（标注“需进一步核实”）；
-4. 给出结论：无冲突 / 存在潜在冲突（列明）/ 信息不足需补充；
-5. 不得编造清单以外的内容，无法确认的事项注明“需进一步核实”。
-
-已代理事项清单：
-${roster}
-
-拟新接事项：
-委托方：${newClient.trim() || '（未填）'}
-相对方：${newAdverse.trim() || '（未填）'}
-案件简述：${brief.trim() || '（无）'}`;
-  }
-
-  async function review() {
-    if (busy) return;
-    if (!newClient.trim() && !newAdverse.trim()) return;
-    setBusy(true);
-    setResult('');
-    setCopied(false);
-    try {
-      await onGenerate(buildPrompt(), setResult);
-    } catch (e) {
-      setResult('⚠️ ' + ((e as Error).message || '审查失败'));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function copy() {
-    navigator.clipboard?.writeText(result);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
-        先维护「已代理事项」（委托方 / 相对方），再填入拟新接事项的双方，一键排查利益冲突。台账存于本机，刷新不丢。
-      </p>
-
-      {quick.length > 0 && (
-        <div className="space-y-1.5 rounded-lg border border-destructive/30 bg-destructive/5 p-2.5">
-          {quick.map((h, i) => (
-            <div
-              key={i}
-              className={`text-[0.74rem] leading-relaxed ${h.level === 'danger' ? 'text-destructive' : 'text-amber-600'}`}
-            >
-              {h.level === 'danger' ? '● ' : '○ '}
-              {h.message}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="space-y-2 rounded-lg border border-border p-3">
-        <div className="text-[0.74rem] font-medium text-foreground">拟新接事项排查</div>
-        <input
-          value={newClient}
-          onChange={(e) => setNewClient(e.target.value)}
-          placeholder="新委托方（客户）"
-          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-        <input
-          value={newAdverse}
-          onChange={(e) => setNewAdverse(e.target.value)}
-          placeholder="新相对方（对方）"
-          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-        <textarea
-          value={brief}
-          onChange={(e) => setBrief(e.target.value)}
-          rows={3}
-          placeholder="案件简述（可选）"
-          className="w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-        <button
-          onClick={review}
-          disabled={busy || (!newClient.trim() && !newAdverse.trim())}
-          className="flex w-full items-center justify-center gap-1 rounded-md bg-primary px-3 py-1.5 text-[0.8rem] text-primary-foreground hover:opacity-90 disabled:opacity-40"
-        >
-          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}
-          {busy ? '审查中…' : '开始利益冲突审查'}
-        </button>
-      </div>
-
-      {result && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[0.74rem] font-medium text-foreground">审查意见</span>
-            <button
-              onClick={copy}
-              className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground hover:text-foreground"
-            >
-              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-              {copied ? '已复制' : '复制'}
-            </button>
-          </div>
-          <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2.5 text-[0.78rem] leading-relaxed">
-            {result}
-          </pre>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        <div className="text-[0.74rem] font-medium text-foreground">已代理事项台账</div>
-        <div className="space-y-2 rounded-lg border border-border p-3">
-          <input
-            value={matter}
-            onChange={(e) => setMatter(e.target.value)}
-            placeholder="事项名称（如：A公司诉B公司商标侵权案）"
-            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-          />
-          <div className="flex gap-2">
-            <input
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-              placeholder="我方委托方"
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-            />
-            <input
-              value={adverse}
-              onChange={(e) => setAdverse(e.target.value)}
-              placeholder="相对方"
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-            />
-          </div>
-          <div className="flex gap-2">
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value as 'active' | 'closed')}
-              className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-            >
-              <option value="active">进行中</option>
-              <option value="closed">已结案</option>
-            </select>
-            <input
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="备注（可选）"
-              className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-            />
-          </div>
-          <button
-            onClick={add}
-            disabled={!client.trim() || !adverse.trim()}
-            className="flex w-full items-center justify-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-3 py-1.5 text-[0.8rem] text-primary hover:bg-primary/10 disabled:opacity-40"
-          >
-            <Plus className="h-3.5 w-3.5" /> 添加事项
-          </button>
-        </div>
-
-        {list.length === 0 ? (
-          <p className="py-3 text-center text-[0.78rem] text-muted-foreground">还没有已代理事项</p>
-        ) : (
-          <ul className="space-y-2">
-            {list.map((m) => (
-              <li key={m.id} className="flex items-start gap-2 rounded-lg border border-border p-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[0.66rem] ${m.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-muted text-muted-foreground'}`}
-                    >
-                      {m.status === 'active' ? '进行中' : '已结案'}
-                    </span>
-                    <span className="truncate text-[0.82rem] font-medium">{m.matter}</span>
-                  </div>
-                  <div className="mt-0.5 text-[0.74rem] text-muted-foreground">
-                    委托方：{m.client} · 相对方：{m.adverse}
-                  </div>
-                  {m.note && (
-                    <div className="mt-0.5 truncate text-[0.72rem] text-muted-foreground">{m.note}</div>
-                  )}
-                </div>
-                <button
-                  onClick={() => remove(m.id)}
-                  className="rounded p-1 text-muted-foreground hover:text-destructive"
-                  title="删除"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
     </div>
   );
 }

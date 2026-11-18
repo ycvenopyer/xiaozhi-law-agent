@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronRight, FolderClosed, FolderOpen, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, SquarePen, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, FolderClosed, FolderOpen, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, SquarePen, Trash2 } from 'lucide-react';
+import { ConversationSearch } from './ConversationSearch';
 import type { Project, Session } from '@/types/agent';
 import { sortConversations } from '@/lib/projects';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -69,6 +70,7 @@ function ConversationRow({ session, active, projects, disabled, onSelect, onRena
 export function Sidebar(props: Props) {
   const [expanded, setExpanded] = useState(() => new Set(props.projects.map(project => project.id)));
   const [pinnedOpen, setPinnedOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [chatsOpen, setChatsOpen] = useState(true);
   const [dialog, setDialog] = useState<EditDialog | null>(null);
@@ -109,7 +111,14 @@ export function Sidebar(props: Props) {
   return <>
     {props.open && <button type="button" aria-label="关闭侧边栏遮罩" onClick={props.onClose} className="fixed inset-0 z-30 bg-black/30 md:hidden" />}
     <aside aria-label="工作空间侧边栏" className={`${props.open ? 'flex' : 'hidden'} fixed inset-y-0 z-40 h-full w-64 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:static md:z-auto ${props.right ? 'right-0 order-2 border-l border-sidebar-border' : 'left-0 order-1 border-r border-sidebar-border'}`}>
-      <div className="flex items-center gap-2.5 px-4 pb-3 pt-4"><img src="/favicon.svg?v=xiaozhi" alt="" className="h-7 w-7 rounded-lg" /><span className="text-sm font-semibold tracking-tight">Xiaozhi</span><button type="button" onClick={props.onClose} aria-label="收起侧边栏" className="ml-auto rounded-md p-1.5 text-muted-foreground hover:bg-sidebar-accent"><PanelLeftClose className="h-4 w-4" /></button></div>
+      <div className="flex items-center gap-2.5 px-4 pb-3 pt-4">
+        <img src="/favicon.svg?v=xiaozhi" alt="" className="h-7 w-7 rounded-lg" />
+        <span className="text-sm font-semibold tracking-tight">Xiaozhi</span>
+        <div className="ml-auto flex gap-1">
+          <button type="button" onClick={() => setSearchOpen(true)} aria-label="搜索对话" title="搜索对话" className="rounded-md p-1.5 text-muted-foreground hover:bg-sidebar-accent"><Search className="size-4" /></button>
+          <button type="button" onClick={props.onClose} aria-label="收起侧边栏" className="rounded-md p-1.5 text-muted-foreground hover:bg-sidebar-accent"><PanelLeftClose className="size-4" /></button>
+        </div>
+      </div>
       <div className="px-2"><button type="button" onClick={() => props.onNew()} disabled={props.disabled} className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors hover:bg-sidebar-accent disabled:opacity-50"><SquarePen className="h-4 w-4" />新建对话</button></div>
       <nav aria-label="对话与项目" className="mt-3 min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-2 pb-6">
         {pinned.length > 0 && <section aria-label="置顶对话">
@@ -140,6 +149,8 @@ export function Sidebar(props: Props) {
       </nav>
       <div className="shrink-0 border-t border-sidebar-border p-2">{props.footer}</div>
     </aside>
+    {searchOpen && <ConversationSearch sessions={props.sessions} projects={props.projects} disabled={props.disabled}
+      onClose={() => setSearchOpen(false)} onSelect={id => { setSearchOpen(false); props.onSelect(id); }} />}
     <Dialog open={!!dialog} onOpenChange={open => { if (!open) setDialog(null); }}><DialogContent className="sm:max-w-sm"><form onSubmit={submitDialog}>
       <DialogHeader><DialogTitle>{dialogTitle}</DialogTitle><DialogDescription>{dialog?.type === 'delete-project' ? '项目中的对话会移回普通对话列表，内容保留。' : dialog?.type === 'delete-session' ? '删除后无法从历史列表恢复此对话。' : dialog?.type === 'create-project' ? '把同一案件或主题的对话收纳在一个项目中。' : '修改显示名称，方便查找与整理。'}</DialogDescription></DialogHeader>
       {deleting ? <p className="my-5 break-words text-sm">确认删除“{dialog && 'name' in dialog ? dialog.name : ''}”？</p> : <div className="my-5"><label htmlFor="sidebar-edit-name" className="mb-2 block text-xs text-muted-foreground">名称</label><input id="sidebar-edit-name" autoFocus value={name} onChange={event => { setName(event.target.value); setError(''); }} maxLength={80} placeholder={dialog?.type === 'create-project' ? '例如：商标侵权案件' : '输入新名称'} className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" />{error && <p role="alert" className="mt-2 text-xs text-destructive">{error}</p>}</div>}

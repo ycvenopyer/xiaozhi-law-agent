@@ -53,7 +53,7 @@ export interface Session {
   projectId?: string;
   pinnedAt?: number;
   titleEdited?: boolean;
-  /** Structured case background for the matter being handled in this session. */
+  /** Retained for records imported from older versions. */
   dossier?: CaseDossier;
 }
 
@@ -74,38 +74,6 @@ export interface CaseDossier {
   /** Original uploaded material, kept for reference (not sent to the model). */
   raw?: string;
   sourceFiles?: AttachedFile[];
-}
-
-export const EMPTY_DOSSIER: CaseDossier = {
-  parties: '',
-  cause: '',
-  facts: '',
-  claims: '',
-  evidence: '',
-};
-
-export const DOSSIER_CAUSES = [
-  '商标侵权',
-  '专利侵权',
-  '著作权侵权',
-  '不正当竞争',
-  '商业秘密',
-  '其他',
-];
-
-/** Placeholder kept in `raw` when the dossier was recognized from images. */
-export const IMAGE_DOSSIER_RAW = '（图片卷宗，已通过视觉模型识别）';
-
-/** Serialize the dossier into the block the backend injects as case background. */
-export function dossierToText(d?: CaseDossier): string {
-  if (!d) return '';
-  const lines: string[] = [];
-  if (d.parties.trim()) lines.push(`当事人：${d.parties.trim()}`);
-  if (d.cause.trim()) lines.push(`案由：${d.cause.trim()}`);
-  if (d.facts.trim()) lines.push(`核心事实：${d.facts.trim()}`);
-  if (d.claims.trim()) lines.push(`诉讼请求：${d.claims.trim()}`);
-  if (d.evidence.trim()) lines.push(`证据清单：${d.evidence.trim()}`);
-  return lines.join('\n');
 }
 
 export type AgentEvent =

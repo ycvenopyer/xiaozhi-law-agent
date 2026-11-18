@@ -3,6 +3,7 @@ import { LockKeyhole, Mail, Loader2, Download, ChevronsUpDown, CircleHelp, LogOu
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AppearancePanel } from './AppearancePanel';
+import { LoginBrand } from './LoginBrand';
 import type { Appearance } from '@/lib/appearance';
 import { clearModelKeys } from '@/lib/custom-models';
 import { cloud, cloudConfig, authHeaders, requireCloud } from '@/lib/cloudbase';
@@ -93,21 +94,23 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
 
   if (loading) return <div className="flex min-h-screen items-center justify-center gap-2 bg-background text-sm"><Loader2 className="h-4 w-4 animate-spin" />正在读取账号与云端资料…</div>;
   if (user) return <Context.Provider value={{ user, logout }}><div key={user.id}>{children}</div></Context.Provider>;
-  return <main className="flex min-h-screen items-center justify-center bg-background p-6">
-    <section className="w-full max-w-md rounded-2xl border border-border bg-card p-8 shadow-sm">
-      <div className="mb-8 flex items-center gap-3"><img src="/xiaozhi-avatar.png" alt="" className="h-12 w-12 rounded-xl" /><div><p className="text-lg font-semibold">小知 · 私人工作空间</p><p className="mt-1 text-xs text-muted-foreground">知识产权办案助理</p></div></div>
-      <h1 className="text-2xl font-semibold tracking-tight">登录后，继续你的工作</h1>
-      <p className="mb-6 mt-3 text-sm leading-6 text-muted-foreground">对话、知识库与附件按账号保存。第三方模型处理默认关闭，可在登录后单独开启。</p>
-      {!cloud && <p role="alert" className="mb-4 text-sm text-destructive">{cloudConfig.error || '尚未配置 Publishable Key，请按部署文档完成环境变量配置并重新构建。'}</p>}
-      <form onSubmit={sent ? signIn : sendCode} className="space-y-4">
-        <label className="block text-sm">邮箱<input className={`${field} mt-2`} type="email" autoComplete="email" required value={email} disabled={sent || busy} onChange={event => setEmail(event.target.value)} /></label>
-        {sent && <label className="block text-sm">邮箱验证码<input className={`${field} mt-2`} inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={event => setCode(event.target.value)} /></label>}
-        {error && <p role="alert" className="text-sm leading-6 text-destructive">{error}</p>}
-        <button disabled={!cloud || busy} className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}{sent ? '验证并进入' : '发送邮箱验证码'}</button>
-      </form>
-      {sent && <div className="mt-3 flex gap-3 text-xs"><button disabled={busy || cooldown > 0} onClick={event => void sendCode(event)} className="disabled:opacity-40">{cooldown ? `${cooldown} 秒后可重发` : '重新发送'}</button><button disabled={busy} onClick={() => { setSent(false); setCode(''); verify.current = null; }}>更换邮箱</button></div>}
-      {cloud && error && <button className={`${button} mt-3`} onClick={() => void enter().catch(cause => setError(errorText(cause)))}>重试读取已登录账号</button>}
-      <div className="mt-8 flex items-start gap-2 border-t border-border pt-5 text-xs leading-5 text-muted-foreground"><LockKeyhole className="mt-0.5 h-4 w-4 shrink-0" />首次验证会创建账号。本机的旧资料不会自动上传，登录后可预览并导入。</div>
+  return <main className="grid min-h-dvh grid-rows-[auto_1fr] bg-background md:grid-cols-[minmax(0,1.12fr)_minmax(0,1fr)] md:grid-rows-1">
+    <LoginBrand />
+    <section className="flex min-w-0 items-center justify-center px-6 py-8 md:px-10 md:py-12">
+      <div className="w-full max-w-[25rem]">
+        <h1 className="text-2xl font-semibold tracking-tight md:text-[1.8rem]">登录后，继续你的工作</h1>
+        <p className="mb-7 mt-3 text-sm leading-6 text-muted-foreground">使用邮箱验证码进入你的工作空间。对话、知识库与文件按账号保存。</p>
+        {!cloud && <p role="alert" className="mb-4 text-sm text-destructive">{cloudConfig.error || '尚未配置 Publishable Key，请按部署文档完成环境变量配置并重新构建。'}</p>}
+        <form onSubmit={sent ? signIn : sendCode} className="space-y-4">
+          <label className="block text-sm">邮箱<input className={`${field} mt-2`} type="email" autoComplete="email" required value={email} disabled={sent || busy} onChange={event => setEmail(event.target.value)} /></label>
+          {sent && <label className="block text-sm">邮箱验证码<input className={`${field} mt-2`} inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={event => setCode(event.target.value)} /></label>}
+          {error && <p role="alert" className="text-sm leading-6 text-destructive">{error}</p>}
+          <button disabled={!cloud || busy} className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}{sent ? '验证并进入' : '发送邮箱验证码'}</button>
+        </form>
+        {sent && <div className="mt-3 flex gap-3 text-xs"><button disabled={busy || cooldown > 0} onClick={event => void sendCode(event)} className="disabled:opacity-40">{cooldown ? `${cooldown} 秒后可重发` : '重新发送'}</button><button disabled={busy} onClick={() => { setSent(false); setCode(''); verify.current = null; }}>更换邮箱</button></div>}
+        {cloud && error && <button className={`${button} mt-3`} onClick={() => void enter().catch(cause => setError(errorText(cause)))}>重试读取已登录账号</button>}
+        <div className="mt-8 flex items-start gap-2 border-t border-border pt-5 text-xs leading-5 text-muted-foreground"><LockKeyhole className="mt-0.5 h-4 w-4 shrink-0" />首次验证将创建账号。第三方模型处理默认关闭，可在登录后设置。</div>
+      </div>
     </section>
   </main>;
 }

@@ -23,7 +23,7 @@ interface Props {
 }
 
 function providerName(model: ModelInfo) {
-  return model.provider || (model.id.startsWith('zhipu-') ? '智谱 AI' : model.id.startsWith('sf-') ? 'SiliconFlow' : 'OpenRouter');
+  return model.provider || '智谱 AI';
 }
 
 export function ModelSelector({ models, value, onChange, loading, error, onRetry, onManageCustom, disabled }: Props) {

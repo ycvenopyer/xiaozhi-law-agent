@@ -1,4 +1,4 @@
-import { motion } from "./MotionPrimitives";
+import { motion } from 'framer-motion';
 
 const variants = {
   fade: {

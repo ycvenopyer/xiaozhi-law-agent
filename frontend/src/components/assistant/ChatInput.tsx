@@ -114,7 +114,7 @@ export function ChatInput(props: Props) {
       : { title: '检索法条', subtitle: '在已提供材料中按法典、条文检索', placeholder: '主题关键词，如：商标侵权赔偿、合理使用', icon: <Scale className="h-4 w-4" /> };
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-5">
+    <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-5">
       <div className="relative rounded-2xl border border-border bg-card shadow-sm">
         {/* 检索弹窗 */}
         {popover && (

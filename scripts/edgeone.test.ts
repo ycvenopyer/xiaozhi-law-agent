@@ -5,8 +5,6 @@ import request from 'supertest'
 process.env.NODE_ENV = 'test'
 process.env.API_PREFIX = '/api'
 process.env.ZHIPU_API_KEY = 'synthetic-model-key'
-process.env.SILICONFLOW_API_KEY = 'synthetic-other-supplier'
-process.env.OPENROUTER_API_KEY = ''
 process.env.CLOUDBASE_PUBLISHABLE_KEY = 'synthetic-publishable-key'
 process.env.LOG_LEVEL = 'silent'
 
@@ -22,6 +20,7 @@ let modelCalls: string[] = []
 let failModel = false
 let blockModel = false
 let streamError = false
+let newsCalls = 0
 let savedStatus = ''
 let record = makeRecord()
 function makeRecord() {
@@ -54,8 +53,21 @@ globalThis.fetch = async (url, init) => {
     return json(record)
   }
   if (address.endsWith('/chat/completions')) {
-    modelCalls.push(address)
     const body = JSON.parse(String(init?.body))
+    if (body.tools?.some((tool: { type: string }) => tool.type === 'web_search')) {
+      newsCalls++
+      assert.equal(body.model, 'glm-4.7-flash')
+      assert.equal(body.messages.length, 1)
+      const date = body.tools[0].web_search.search_query.match(/\d{4}-\d{2}-\d{2}/)?.[0]
+      assert.ok(date)
+      return json({ web_search: [
+        { title: '今日发布的专利公告', link: 'https://example.test/latest', publish_date: date, media: '示例来源' },
+        { title: '昨日专利动态', link: 'https://example.test/archive', publish_date: '2000-01-01' },
+        { title: '未注明发布日期的商标新闻', link: 'https://example.test/undated' },
+        { title: '重复专利公告', link: 'https://example.test/latest#anchor', publish_date: date },
+      ] })
+    }
+    modelCalls.push(address)
     assert.ok((body.tools || []).every((tool: { function: { name: string } }) => ['calculator', 'get_datetime'].includes(tool.function.name)))
     if (blockModel) return new Promise((_resolve, reject) => {
       const abort = () => reject(new Error('aborted'))
@@ -75,8 +87,31 @@ globalThis.fetch = async (url, init) => {
 test('EdgeOne authentication, persistence, upload and privacy boundaries', async t => {
   try {
     await t.test('health routes work with full and stripped API prefixes', async () => {
-      for (const path of ['/api/ping', '/ping', '/api/health', '/health']) await request(app).get(path).expect(200)
+      for (const prefix of ['/api', '']) {
+        const health = await request(app).get(`${prefix}/health`).expect(200)
+        assert.equal(health.body.status, 'ok')
+        assert.ok(health.body.timestamp)
+        const ping = await request(app).get(`${prefix}/ping`).expect(200)
+        assert.equal(ping.body.message, 'pong')
+        assert.ok(ping.body.timestamp)
+      }
       await request(app).get('/api/missing').expect(404)
+    })
+    await t.test('system status and version endpoints retain their response fields', async () => {
+      const ready = await request(app).get('/api/health/ready').expect(200)
+      assert.equal(ready.body.status, 'ready')
+      assert.ok(ready.body.timestamp && ready.body.checks)
+      const live = await request(app).get('/api/health/live').expect(200)
+      assert.equal(live.body.status, 'alive')
+      assert.ok(live.body.timestamp)
+      const welcome = await request(app).get('/api/').expect(200)
+      assert.ok(welcome.body.message && welcome.body.version && welcome.body.timestamp)
+      const version = await request(app).get('/api/version').expect(200)
+      assert.ok(version.body.version && version.body.apiVersion && version.body.nodeVersion && version.body.environment)
+      const status = await request(app).get('/api/status').expect(200)
+      assert.equal(status.body.status, 'operational')
+      assert.equal(typeof status.body.uptime, 'number')
+      assert.ok(status.body.memory && status.body.process)
     })
     await t.test('unauthenticated and forged tokens cannot access private APIs', async () => {
       await request(app).get('/api/agent/models').expect(401)
@@ -102,21 +137,26 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
       assert.equal(modelCalls.length, 0)
       consent = true
     })
-    await t.test('unknown/unconfigured models and a foreign/missing conversation are rejected', async () => {
+    await t.test('unknown or removed models and a foreign/missing conversation are rejected', async () => {
       await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'unknown-model' }).expect(400)
       await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'qwen-free' }).expect(400)
+      await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'sf-qwen3' }).expect(400)
       await request(app).post('/api/agent/chat').set(auth).send({ ...input, conversationId: 'foreign-conversation' }).expect(409)
       assert.equal(modelCalls.length, 0)
     })
-    await t.test('model selection requires the platform key without an extra allow-list', async () => {
+    await t.test('only the configured Zhipu models appear in the built-in catalogue', async () => {
       const response = await request(app).get('/api/agent/models').set(auth).expect(200)
-      assert.ok(response.body.find((model: { id: string; available: boolean }) => model.id === 'sf-qwen3')?.available)
-      assert.ok(response.body.find((model: { id: string; available: boolean }) => model.id === 'zhipu-glm')?.available)
-      assert.equal(response.body.find((model: { id: string; available: boolean }) => model.id === 'qwen-free')?.available, false)
-      assert.ok(response.body.every((model: Record<string, unknown>) => model.provider && !('apiKey' in model) && !('baseUrl' in model)))
+      assert.deepEqual(response.body.map((model: { id: string }) => model.id), [
+        'zhipu-glm', 'zhipu-flash', 'zhipu-vision', 'zhipu-air',
+      ])
+      assert.deepEqual(response.body.filter((model: { free: boolean }) => model.free)
+        .map((model: { id: string }) => model.id), ['zhipu-flash', 'zhipu-vision'])
+      assert.ok(response.body.every((model: Record<string, unknown>) =>
+        model.provider === '智谱 AI' && model.available && !('apiKey' in model) && !('baseUrl' in model),
+      ))
       record = makeRecord(); modelCalls = []
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'sf-qwen3' }).expect(200)
-      assert.deepEqual(modelCalls, ['https://api.siliconflow.cn/v1/chat/completions'])
+      await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'zhipu-air' }).expect(200)
+      assert.deepEqual(modelCalls, ['https://open.bigmodel.cn/api/paas/v4/chat/completions'])
       assert.equal(savedStatus, 'complete')
     })
     await t.test('custom model requests require login and the same work-data consent', async () => {
@@ -130,6 +170,22 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
       await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'custom-missing-key' }).expect(400)
       await request(app).post('/api/agent/custom-model/test').set(auth).send({ ...config, baseUrl: 'https://localhost' }).expect(400)
       assert.equal(modelCalls.length, previousCalls)
+    })
+    await t.test('news uses the selected model and returns only dated sources from today', async () => {
+      const body = { model: 'zhipu-flash' }
+      await request(app).post('/api/agent/ip-news').send(body).expect(401)
+      consent = false
+      try {
+        await request(app).post('/api/agent/ip-news').set(auth).send(body).expect(403)
+      } finally { consent = true }
+      const customModel = { baseUrl: 'https://api.example.test/v1', model: 'test', apiKey: 'synthetic-key', vision: false, tools: false }
+      await request(app).post('/api/agent/ip-news').set(auth).send({ model: 'custom-test', customModel }).expect(400)
+      assert.equal(newsCalls, 0)
+      const result = await request(app).post('/api/agent/ip-news').set(auth)
+        .send({ ...body, knowledge: 'private knowledge', messages: [{ role: 'user', content: 'private history' }] }).expect(200)
+      assert.equal(newsCalls, 1)
+      assert.equal(result.body.articles.length, 1)
+      assert.equal(result.body.articles[0].url, 'https://example.test/latest')
     })
     await t.test('answers are persisted before done and SSE remains uncompressed', async () => {
       for (const path of ['/api/agent/chat', '/agent/chat']) {

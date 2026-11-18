@@ -6,7 +6,7 @@ import { MessageList } from '@/components/assistant/MessageList';
 import { ChatInput, type RetrieveMode } from '@/components/assistant/ChatInput';
 import { EmptyState } from '@/components/assistant/EmptyState';
 import { KnowledgePanel } from '@/components/assistant/KnowledgePanel';
-import { streamChat, uploadFile } from '@/lib/agent-client';
+import { fetchIpNews, streamChat, uploadFile } from '@/lib/agent-client';
 import { loadSessions, saveSessions, newSessionId } from '@/lib/sessions';
 import { loadProjects, saveProjects } from '@/lib/projects';
 import { loadKB, saveKB, kbToText, type KBEntry } from '@/lib/knowledge';
@@ -104,7 +104,8 @@ export default function Index() {
   const [modelsError, setModelsError] = useState('');
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     if (typeof localStorage === 'undefined') return 'zhipu-glm';
-    return localStorage.getItem(`agent-model:${accountId}`) || localStorage.getItem('agent-model') || 'zhipu-glm';
+    const saved = localStorage.getItem(`agent-model:${accountId}`) || localStorage.getItem('agent-model');
+    return saved === 'zhipu-flashx' ? 'zhipu-flash' : saved || 'zhipu-glm';
   });
   const selectedCustom = customModels.find(model => model.id === selectedModel);
   const modelOptions = [
@@ -149,7 +150,7 @@ export default function Index() {
         const custom = loadCustomModels(accountId).find(model => model.id === previous);
         if (custom) return previous;
         if (list.some(model => model.id === previous && model.available)) return previous;
-        return firstAvailable?.id || previous;
+        return firstAvailable?.id || (list.some(model => model.id === previous) ? previous : list[0]?.id || 'zhipu-glm');
       });
     })
     .catch((error: unknown) => {
@@ -593,7 +594,7 @@ export default function Index() {
   );
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background">
+    <div className="flex h-dvh w-full overflow-hidden bg-background">
       <Sidebar
         sessions={sessions}
         projects={projects}
@@ -616,7 +617,7 @@ export default function Index() {
         disabled={workspaceBusy}
       />
       <main className={`flex min-w-0 flex-1 flex-col ${appearance.sidebarSide === 'right' ? 'order-1' : 'order-2'}`}>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-5 py-3">
           {!sidebarOpen && <button type="button" onClick={() => setSidebarOpen(true)} aria-label="展开侧边栏" className="mr-1 rounded-lg p-1.5 text-muted-foreground hover:bg-muted"><PanelLeftOpen className="h-4 w-4" /></button>}
           <span className="text-sm font-semibold">小知</span>
           {currentProject && <><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button type="button" disabled={workspaceBusy} onClick={() => openProject(currentProject.id)} className="max-w-40 truncate rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-muted">{currentProject.name}</button></>}
@@ -644,7 +645,7 @@ export default function Index() {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {note && (
             <div className="mx-auto mt-3 w-full max-w-[var(--chat-max-width)] px-4">
               <div className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-[0.8rem] text-foreground">
@@ -652,10 +653,14 @@ export default function Index() {
               </div>
             </div>
           )}
-          {viewedProject ? <ProjectOverview project={viewedProject} sessions={sessions.filter(session => session.projectId === viewedProject.id)} onNew={() => newChat(viewedProject.id)} onSelect={selectConversation} disabled={workspaceBusy} /> : current && current.messages.length > 0 ? (
-            <MessageList messages={current.messages} avatar={appearance.avatar} onResend={resendEdited} onRegenerate={regenerate} />
+          {current && !viewedProject && current.messages.length > 0 ? (
+            <MessageList key={current.id} messages={current.messages} avatar={appearance.avatar} onResend={resendEdited} onRegenerate={regenerate} />
           ) : (
-            <EmptyState onPick={(t) => { setInput(t); }} avatar={appearance.avatar} />
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {viewedProject
+                ? <ProjectOverview project={viewedProject} sessions={sessions.filter(session => session.projectId === viewedProject.id)} onNew={() => newChat(viewedProject.id)} onSelect={selectConversation} disabled={workspaceBusy} />
+                : <EmptyState onPick={setInput} avatar={appearance.avatar} />}
+            </div>
           )}
         </div>
 
@@ -694,6 +699,12 @@ export default function Index() {
         open={workbenchOpen}
         onClose={() => setWorkbenchOpen(false)}
         onGenerate={generateText}
+        modelLabel={modelOptions.find(model => model.id === selectedModel)?.label || '未选择模型'}
+        workspaceBusy={workspaceBusy}
+        onSearchNews={async signal => {
+          if (!getPrivacy()) throw new Error('请在「设置 → 账号与隐私」中开启第三方模型处理，再检索新闻。');
+          return fetchIpNews(selectedModel, modelRequest(), signal);
+        }}
       />
 
       <ContractPanel open={contractOpen} onClose={() => setContractOpen(false)} onGenerate={generateText} disabled={streaming} />

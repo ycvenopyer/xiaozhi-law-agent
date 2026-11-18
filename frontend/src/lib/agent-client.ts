@@ -7,6 +7,23 @@ import type { CustomModelRequest } from './custom-models';
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 
+export interface IpNews {
+  date: string;
+  articles: { title: string; url: string; source: string; summary: string }[];
+}
+
+export async function fetchIpNews(model: string, customModel: CustomModelRequest | undefined, signal: AbortSignal): Promise<IpNews> {
+  const response = await fetch('/api/agent/ip-news', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...await authHeaders() },
+    body: JSON.stringify({ model, customModel }),
+    signal,
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.message || '新闻搜索失败，请重试。');
+  return result;
+}
+
 function serializeRequest(payload: unknown): string {
   const body = JSON.stringify(payload);
   if (new Blob([body]).size > MAX_JSON_BYTES) {
@@ -135,32 +152,4 @@ export async function uploadFile(file: File): Promise<AttachedFile> {
     truncated: j.truncated,
     type: j.type,
   };
-}
-
-/**
- * Ask the backend to turn raw case material (text or images) into a structured
- * dossier via the LLM. Returns the extracted fields.
- */
-export async function extractDossier(payload: {
-  text?: string;
-  images?: string[];
-  model?: string;
-}): Promise<Record<string, string>> {
-  const body = serializeRequest(payload);
-  const res = await fetch('/api/agent/extract-dossier', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...await authHeaders() },
-    body,
-  });
-  if (!res.ok) {
-    let msg = '卷宗识别失败';
-    try {
-      const j = await res.json();
-      if (j?.message) msg = j.message;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(msg);
-  }
-  return res.json();
 }
