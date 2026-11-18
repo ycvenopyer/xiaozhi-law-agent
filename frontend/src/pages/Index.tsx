@@ -6,7 +6,7 @@ import { MessageList } from '@/components/assistant/MessageList';
 import { ChatInput, type RetrieveMode } from '@/components/assistant/ChatInput';
 import { EmptyState } from '@/components/assistant/EmptyState';
 import { KnowledgePanel } from '@/components/assistant/KnowledgePanel';
-import { fetchIpNews, streamChat, uploadFile } from '@/lib/agent-client';
+import { type WorkbenchMode, fetchIpNews, streamChat, uploadFile } from '@/lib/agent-client';
 import { loadSessions, saveSessions, newSessionId } from '@/lib/sessions';
 import { loadProjects, saveProjects } from '@/lib/projects';
 import { loadKB, saveKB, kbToText, type KBEntry } from '@/lib/knowledge';
@@ -411,7 +411,7 @@ export default function Index() {
           model: selectedModel,
           customModel,
           signal: ac.signal,
-          knowledge: kbEnabled ? kbToText(kb) : '',
+          knowledge: kbEnabled ? kbToText(kb, text) : '',
           conversationId: current.id,
           assistantMessageId: assistantMsg.id,
         })) {
@@ -560,7 +560,7 @@ export default function Index() {
 
   /** 让助理基于当前模型/知识库生成一段纯文本（用于事务台）。 */
   const generateText = useCallback(
-    async (prompt: string, onToken: (text: string) => void): Promise<string> => {
+    async (prompt: string, onToken: (text: string) => void, workflow?: WorkbenchMode): Promise<string> => {
       if (streaming) throw new Error('请等待当前生成结束。');
       if (!getPrivacy()) throw new Error('当前禁止向模型外发资料，请先在账号与隐私中明确授权。');
       const customModel = modelRequest();
@@ -575,7 +575,7 @@ export default function Index() {
         await saveCollection('sessions', nextSessions); await flushCloudStore();
         for await (const ev of streamChat([userMessage], {
           model: selectedModel, customModel, signal: controller.signal,
-          knowledge: kbEnabled ? kbToText(kb) : '',
+          knowledge: kbEnabled ? kbToText(kb, prompt) : '', workflow,
           conversationId: session.id, assistantMessageId: assistantMessage.id,
         })) {
           if (ev.type === 'error') throw new Error(ev.message);
@@ -698,7 +698,7 @@ export default function Index() {
         onToggleEnabled={setKbEnabled}
       />
 
-      <Workbench
+      <Workbench entries={kb}
         open={workbenchOpen}
         onClose={() => setWorkbenchOpen(false)}
         onGenerate={generateText}

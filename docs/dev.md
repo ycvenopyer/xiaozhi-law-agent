@@ -39,7 +39,7 @@ docs/                                 开发、云端、功能说明与研发合
 | 内置与自定义模型 | 内置型号在 `backend/src/modules/agent/providers.ts`，厂商预设在 `frontend/src/lib/model-presets.ts`，自定义接口转发在 `backend/src/modules/agent/custom-provider.ts` |
 | 今日知产新闻 | `Workbench.tsx` 调用独立新闻接口，`backend/src/modules/agent/ip-news.ts` 向 Tavily 提交固定的公开检索词，并按北京时间筛选当天结果 |
 
-前端组件位于 `frontend/src/components/assistant/`。当前功能清单见 [产品功能](product-features.md)。研发合规、FTO 和法规资料属于后续方案，集中在 [项目升级文档](项目升级文档/小知合规方向-项目说明.md)。
+前端组件位于 `frontend/src/components/assistant/`。当前功能清单见 [产品功能](product-features.md)。事务台的业务表单、FTO 回填流程和法规库分别由 `IpWorkflow.tsx`、`PatentScreen.tsx` 和 `shared/law-library.json` 实现。业务规格集中在 [项目升级文档](项目升级文档/小知合规方向-项目说明.md)。
 
 ## 默认模型与自定义端点
 
@@ -87,6 +87,10 @@ docs/                                 开发、云端、功能说明与研发合
 | `POST /api/agent/extract-dossier` | 旧客户端兼容接口，仍要求登录和外发授权 |
 
 对话请求须先保存用户消息与回答占位。聊天最多 60 条消息，JSON 请求上限 5 MiB，文件上限 4 MiB，提取文本上限 40,000 字符。PDF 解析读取嵌入文本，扫描件需先 OCR 或作为支持视觉输入的图片提交。Word 请使用 DOCX。聊天在 100 秒主动截止，正常完成、取消或超时都会尽力保存已收到的内容。
+
+业务报告在 `/api/agent/chat` 使用可选的 `workflow` 字段，保留原有认证、外发授权、会话锁和保存流程。服务端核对结构化输出与当前有效条文后才发送结果。`npm run test:workbench` 测试法条选择、跨年切换、引文校验和 CSV 初筛。
+
+法规库更新工具 `scripts/import-law-library.py` 使用 Python、requests、beautifulsoup4 和 PyMuPDF。对需要浏览器访问的官网，可从同一官方 URL 导出正文到临时目录，用 `--texts <目录>` 指定按来源 ID 命名的 `.txt`。合入前核对文号、施行日期、提取首尾和 PDF 跨页分段。
 
 ## 验证命令
 

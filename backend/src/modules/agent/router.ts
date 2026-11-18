@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { runAgent, extractDossier, streamCompletions } from './llm';
 import { customModelSchema, customProvider } from './custom-provider';
 import { MODEL_REGISTRY, listProviders } from './providers';
+import { generateReport, workflowSchema } from './workbench-report';
 import { findIpNews } from './ip-news';
 import { upload, parseFile } from './files';
 import { identity, recordRpc, type UserRecord } from '../cloudbase';
@@ -23,6 +24,7 @@ const modelSchema = z.object({
 });
 const newsSchema = z.object({ apiKey: z.string().trim().max(512).regex(/^[!-~]+$/) });
 const chatSchema = modelSchema.extend({
+  workflow: workflowSchema.optional(),
   messages: z.array(messageSchema).min(1).max(60),
   knowledge: z.string().optional(), dossier: z.string().optional(),
   conversationId: z.string().min(1).max(200), assistantMessageId: z.string().min(1).max(200),
@@ -120,7 +122,12 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   const deadline = setTimeout(() => { timedOut = true; ac.abort(); }, 100_000);
   res.on('close', () => { ac.abort(); clearInterval(heartbeat); clearTimeout(deadline); });
   try {
-    await runAgent(input.messages as ChatMessage[], (event: AgentEvent) => {
+    if (input.workflow) {
+      const facts = input.messages.at(-1)?.content || '';
+      content = await generateReport(input.workflow, facts, input.knowledge || '', provider, ac.signal);
+      send({ type: 'token', content });
+      completed = true;
+    } else await runAgent(input.messages as ChatMessage[], (event: AgentEvent) => {
       if (event.type === 'token') content += event.content;
       if (event.type === 'tool_start') toolCalls.push({ ...event, status: 'running' });
       if (event.type === 'tool_end') {
@@ -132,7 +139,7 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
     }, ac.signal, provider, input.knowledge, input.dossier);
   } catch {
     // Do not expose upstream response bodies, prompts, or supplier diagnostics.
-    failure = '模型生成失败，请稍后重试。';
+    failure = input.workflow ? '未取得通过格式和引文核验的报告，请核对资料后重试。' : '模型生成失败，请稍后重试。';
   } finally {
     clearTimeout(deadline); clearInterval(heartbeat);
     if (timedOut) failure = '生成超过 100 秒，已保存已收到的内容。';

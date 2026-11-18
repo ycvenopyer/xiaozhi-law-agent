@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import { BookOpen, Plus, Trash2, Pencil, X, Check } from 'lucide-react';
-import { kbToText, type KBEntry, type KBCategory, type KBKind } from '@/lib/knowledge';
+import { lawSources } from '@/lib/law-sources';
+import { kbToText, lawStatus, type KBEntry, type KBCategory, type KBKind } from '@/lib/knowledge';
 
 const CATEGORIES: KBCategory[] = ['商标法', '专利法', '著作权法', '反不正当竞争法', '其他'];
-type KindFilter = 'all' | KBKind;
+type KindFilter = 'all' | 'sources' | KBKind;
 const KIND_TABS: { id: KindFilter; label: string }[] = [
   { id: 'all', label: '全部' },
   { id: 'law', label: '法条' },
   { id: 'case', label: '案例' },
+  { id: 'sources', label: '权威来源' },
 ];
 
 interface Props {
@@ -24,9 +26,10 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
   const [draft, setDraft] = useState<KBEntry | null>(null);
   const [kindFilter, setKindFilter] = useState<KindFilter>('all');
 
+  const [query, setQuery] = useState('');
   const visible = useMemo(
-    () => (kindFilter === 'all' ? entries : entries.filter((e) => e.kind === kindFilter)),
-    [entries, kindFilter]
+    () => (kindFilter === 'all' ? entries : entries.filter((e) => e.kind === kindFilter)).filter(e => (e.title+' '+e.content).includes(query.trim())),
+    [entries, kindFilter, query]
   );
 
   function startNew() {
@@ -35,7 +38,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
   }
 
   function startEdit(e: KBEntry) {
-    setDraft({ ...e });
+    setDraft({ ...e, builtin: false, official: undefined, legacyReference: false });
     setEditingId(e.id);
   }
 
@@ -117,7 +120,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
             const count =
               t.id === 'all'
                 ? entries.length
-                : entries.filter((e) => e.kind === t.id).length;
+                : t.id === 'sources' ? lawSources.length : entries.filter((e) => e.kind === t.id).length;
             const active = kindFilter === t.id;
             return (
               <button
@@ -139,6 +142,8 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
         </div>
 
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+          <input aria-label="搜索知识库" placeholder="搜索法规、条文或来源名称" value={query} onChange={ev=>setQuery(ev.target.value)} className="w-full rounded-md border bg-background px-3 py-2 text-sm" />
+          {kindFilter === 'sources' && lawSources.filter(s=>s.title.includes(query.trim())).map(s=><div key={s.title} className="rounded-lg border p-3 text-sm"><span className="block text-xs text-muted-foreground">{s.group}</span><a href={s.url} target="_blank" rel="noreferrer" className="text-primary">{s.title}</a>{s.links.slice(1).map((link,i)=><a key={link} href={link} target="_blank" rel="noreferrer" className="ml-2 text-xs underline">清单原始链接 {i+1}</a>)}</div>)}
           {editingId && draft ? (
             <div className="space-y-2 rounded-xl border border-primary/40 bg-primary/5 p-3">
               <input
@@ -198,7 +203,9 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
 
           {visible.map((e) => {
             const isCase = e.kind === 'case';
-            const on = e.enabled !== false;
+            const status = lawStatus(e);
+            const active = status === '现行有效' || status === '个人资料';
+            const on = active && e.enabled !== false;
             return (
               <div
                 key={e.id}
@@ -221,13 +228,13 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
                   </span>
                   <span className="text-[0.85rem] font-medium leading-snug">{e.title}</span>
                   <div className="ml-auto flex shrink-0 gap-1">
-                    <button
+                    {!e.official && <button
                       onClick={() => startEdit(e)}
                       className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                       title="编辑"
                     >
                       <Pencil className="h-3.5 w-3.5" />
-                    </button>
+                    </button>}
                     <button
                       onClick={() => remove(e.id)}
                       className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
@@ -237,6 +244,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
                     </button>
                   </div>
                 </div>
+                <div className="mt-2 text-xs text-muted-foreground">{status}{e.official && <> · {e.official.version} · {e.official.effective_date} 施行 · <a className="text-primary underline" href={e.official.source_url} target="_blank" rel="noreferrer">官方原文</a></>}</div>
                 <p className="mt-1.5 line-clamp-3 text-[0.76rem] leading-relaxed text-muted-foreground">
                   {e.content}
                 </p>
@@ -244,6 +252,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
                   <input
                     type="checkbox"
                     checked={on}
+                    disabled={!active}
                     onChange={(ev) =>
                       onChange(
                         entries.map((x) =>
@@ -261,7 +270,7 @@ export function KnowledgePanel({ open, onClose, entries, onChange, enabled, onTo
         </div>
 
         <div className="border-t border-border px-4 py-2 text-[0.7rem] text-muted-foreground">
-          知识库仅保存在本机浏览器，用于让回答更专业、有出处。
+          公共法规随应用提供。个人条目和引用选择按账号同步至 CloudBase。
         </div>
       </aside>
     </div>

@@ -8,17 +8,21 @@ import {
   Loader2,
   Newspaper,
   ArrowUpRight,
-  Search,
+  Search, ScanSearch, Fingerprint, ShieldCheck, FilePenLine,
 } from 'lucide-react';
-import type { IpNews } from '@/lib/agent-client';
+import { IpWorkflow, workflowNames } from './IpWorkflow';
+import type { KBEntry } from '@/lib/knowledge';
+import type { IpNews, WorkbenchMode } from '@/lib/agent-client';
 
-type Tab = 'doc' | 'news';
+const scenarios = { compare: ScanSearch, infringement: Fingerprint, compliance: ShieldCheck, draft: FilePenLine };
+type Tab = 'doc' | 'news' | WorkbenchMode;
 
 interface Props {
+  entries: KBEntry[];
   open: boolean;
   onClose: () => void;
   /** 调用助理生成文本，实时回传 token。 */
-  onGenerate: (prompt: string, onToken: (text: string) => void) => Promise<string>;
+  onGenerate: (prompt: string, onToken: (text: string) => void, workflow?: WorkbenchMode) => Promise<string>;
   onSearchNews: (signal: AbortSignal) => Promise<IpNews>;
   searchConfigured: boolean;
 }
@@ -37,7 +41,7 @@ const EMAIL_SUBTYPES = [
   { id: 'generic', name: '通用商务邮件' },
 ];
 
-export function Workbench({ open, onClose, onGenerate, onSearchNews, searchConfigured }: Props) {
+export function Workbench({ entries, open, onClose, onGenerate, onSearchNews, searchConfigured }: Props) {
   const [tab, setTab] = useState<Tab>('news');
 
   return (
@@ -48,7 +52,7 @@ export function Workbench({ open, onClose, onGenerate, onSearchNews, searchConfi
       />
       <aside
         aria-label="事务台"
-        className={`absolute right-0 top-0 flex h-full w-full max-w-md flex-col bg-card shadow-xl transition-transform ${
+        className={`absolute right-0 top-0 flex h-full w-full max-w-xl flex-col bg-card shadow-xl transition-transform ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
@@ -64,7 +68,11 @@ export function Workbench({ open, onClose, onGenerate, onSearchNews, searchConfi
           </button>
         </div>
 
-        <div className="flex shrink-0 border-b border-border text-[0.8rem]">
+        <div className="grid shrink-0 grid-cols-3 border-b border-border text-[0.8rem]">
+          {(Object.keys(scenarios) as WorkbenchMode[]).map(id => {
+            const Icon = scenarios[id];
+            return <TabButton key={id} active={tab===id} onClick={()=>setTab(id)} icon={<Icon className="size-4" />}>{workflowNames[id]}</TabButton>;
+          })}
           <TabButton active={tab === 'news'} onClick={() => setTab('news')} icon={<Newspaper className="h-3.5 w-3.5" />}>
             知产新闻
           </TabButton>
@@ -74,6 +82,7 @@ export function Workbench({ open, onClose, onGenerate, onSearchNews, searchConfi
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
+          {(Object.keys(scenarios) as WorkbenchMode[]).map(id => <div key={id} hidden={tab!==id}><IpWorkflow mode={id} entries={entries} onGenerate={onGenerate}/></div>)}
           <div hidden={tab !== 'news'}><NewsTab onSearchNews={onSearchNews} searchConfigured={searchConfigured} /></div>
           <div hidden={tab !== 'doc'}><DocTab onGenerate={onGenerate} /></div>
         </div>
@@ -159,6 +168,7 @@ function TabButton({
 }) {
   return (
     <button
+      aria-pressed={active}
       onClick={onClick}
       className={`flex flex-1 items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 ${
         active

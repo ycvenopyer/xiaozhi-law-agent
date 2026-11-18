@@ -303,6 +303,54 @@ with sync_playwright() as p:
     page.keyboard.press('Escape')
     custom.wait_for(state='hidden')
 
+    # Exercise the workbench via its normal controls. The mock model emits a fixture;
+    # server-side citation/format checks are exercised separately in the Node suite.
+    page.get_by_role('button',name='事务台',exact=True).click()
+    for scenario in ['检索比对','侵权识别','合规提示','知产文书']:
+        workbench.get_by_role('button',name=scenario,exact=True).click()
+        workbench.get_by_label(scenario+'事项').wait_for()
+    workbench.get_by_label('知产文书事项').select_option('保密协议（NDA）')
+    workbench.get_by_label('当事人及角色',exact=True).fill('公开示例：甲方委托乙方测试。')
+    send_report = workbench.get_by_role('button',name='生成文书初稿',exact=True)
+    assert send_report.is_disabled()
+    workbench.get_by_role('checkbox',name=re.compile('^我已脱敏')).check()
+    send_report.click()
+    workbench.get_by_text('Mocked answer 7',exact=True).wait_for()
+    assert requests[-1]['workflow'] == 'draft'
+    workbench.get_by_role('button',name='合规提示',exact=True).click()
+    workbench.get_by_label('立项',exact=False).check()
+    with page.expect_download() as checked_file:
+        workbench.get_by_role('button',name='导出清单（1/5）').click()
+    assert '[x] 立项' in checked_file.value.path().read_text(encoding='utf-8')
+    workbench.get_by_role('button',name='检索比对',exact=True).click()
+    workbench.get_by_label('查找知识库材料').fill('商标 混淆')
+    assert workbench.locator('summary:visible').count() > 0
+    workbench.get_by_label('检索比对事项').select_option('专利 FTO 初筛')
+    assert workbench.get_by_label('技术方案',exact=True).is_disabled()
+    workbench.get_by_label('我确认方案已公开',exact=False).check()
+    workbench.get_by_label('技术方案',exact=True).fill('温度传感器')
+    assert workbench.get_by_role('button',name='提取特征').is_disabled()
+    workbench.get_by_label('中国',exact=True).check()
+    workbench.get_by_role('button',name='提取特征').click()
+    workbench.get_by_label('F1 描述').fill('传感器')
+    workbench.get_by_role('button',name='确认特征并扩展关键词').click()
+    workbench.get_by_label('锁定',exact=True).check()
+    workbench.get_by_role('button',name='进入 CSV 回填').click()
+    workbench.locator('input[type=file]:visible').set_input_files({
+        'name':'fixture.tsv','mimeType':'text/tab-separated-values',
+        'buffer':'公开号\t标题\t摘要\nCN100A\t传感器\t温度传感器\nCN-100-A\t重复\t重复'.encode('gbk')})
+    workbench.get_by_text('缺法律状态，全部标为未核验。').wait_for()
+    workbench.get_by_label('复核备注').fill('人工复核示例')
+    workbench.get_by_label('复核选择').select_option('纳入')
+    with page.expect_download() as report_file:
+        workbench.get_by_role('button',name='导出 Word',exact=True).click()
+    from zipfile import ZipFile
+    with ZipFile(report_file.value.path()) as doc:
+        xml = doc.read('word/document.xml').decode()
+        assert all(s in xml for s in ['人工复核示例','去重后 1 条','未完成环节','需人工复核'])
+    assert len(requests) == 7
+    workbench.get_by_role('button',name='关闭事务台').click()
+
     # Mobile layout: each restored control remains in view with no horizontal overflow.
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

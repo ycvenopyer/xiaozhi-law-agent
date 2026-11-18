@@ -1,4 +1,5 @@
 import { loadCollection, saveInBackground } from './cloud-store';
+import library from '../../../shared/law-library.json';
 export type KBCategory = '商标法' | '专利法' | '著作权法' | '反不正当竞争法' | '其他';
 export type KBKind = 'law' | 'case';
 
@@ -13,6 +14,8 @@ export interface KBEntry {
   builtin?: boolean;
   /** whether this entry is fed to the model; user can toggle per entry */
   enabled?: boolean;
+  official?: { version: string; source_url: string; effective_date: string; end_date: string; authority: string; tier: string; updated_at: string };
+  legacyReference?: boolean;
 }
 
 const SEED: KBEntry[] = [
@@ -648,7 +651,34 @@ const LAW_FULL_SEED: KBEntry[] = [
   },
 ];
 
-const SEED_ALL = [...SEED, ...EXTRA_SEED, ...GUIDE_SEED, ...LAW_FULL_SEED];
+const previousSeeds = [...SEED, ...EXTRA_SEED, ...GUIDE_SEED, ...LAW_FULL_SEED];
+const officialEntries: KBEntry[] = library.laws.flatMap(law => law.articles.map(article => ({
+  id: 'law-' + law.id + '-' + article.number,
+  title: law.title + ' ' + article.label,
+  category: (['商标法', '专利法', '著作权法', '反不正当竞争法'] as KBCategory[]).find(c => law.title.includes(c)) ?? '其他',
+  kind: 'law' as const, builtin: true, enabled: true, content: article.content,
+  official: { version: law.version, source_url: law.source_url, effective_date: law.effective_date,
+    end_date: law.end_date, authority: law.authority, tier: law.tier, updated_at: library.updated_at },
+})));
+const SEED_ALL: KBEntry[] = [...officialEntries, ...previousSeeds.filter(e => e.kind === 'case' || e.id.startsWith('seed-guide')).map(e => ({
+  ...e, enabled: false, builtin: true, legacyReference: true,
+}))];
+
+export const beijingDate = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+export function lawStatus(entry: KBEntry, date = beijingDate()) {
+  const law = entry.official;
+  if (!law) return entry.legacyReference ? '待核验参考资料' : '个人资料';
+  if (date < law.effective_date) return '尚未施行';
+  return law.end_date && date >= law.end_date ? '已修改' : '现行有效';
+}
+
+function replacement(id: string) {
+  const match = /^seed-(tm|cr|pat|uc)-(?:full-)?(\d+)$/.exec(id);
+  if (!match) return undefined;
+  const [, family, number] = match;
+  const ucMap: Record<string,string> = { '2':'2','6':'7','8':'9','9':'10','10':'11','11':'12','17':'22' };
+  return 'law-' + (family === 'tm' ? 'tm19' : family) + '-' + (family === 'uc' ? ucMap[number] : number);
+}
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v));
@@ -658,7 +688,17 @@ function clone<T>(v: T): T {
 export function loadKB(): KBEntry[] {
   const saved = loadCollection<KBEntry & { deleted?: boolean }>('knowledge');
   const byId = new Map(clone(SEED_ALL).map(entry => [entry.id, entry]));
-  saved.forEach(entry => { if (entry.deleted) byId.delete(entry.id); else byId.set(entry.id, entry); });
+  for (const entry of saved) {
+    const old = previousSeeds.find(seed => seed.id === entry.id);
+    const id = replacement(entry.id) ?? entry.id;
+    if (entry.deleted) { byId.delete(id); continue; }
+    const seed = byId.get(id);
+    if (seed && ((entry.content === seed.content && entry.title === seed.title) || (old?.content === entry.content && old.title === entry.title))) {
+      byId.set(id, { ...seed, enabled: seed.legacyReference ? false : entry.enabled });
+    } else if (!old || old.content !== entry.content || old.title !== entry.title) {
+      byId.set(entry.id, { ...entry, official: undefined, builtin: false });
+    }
+  }
   return [...byId.values()];
 }
 
@@ -666,14 +706,33 @@ export function saveKB(list: KBEntry[]): void {
   const ids = new Set(list.map(entry => entry.id));
   const seeds = new Map(SEED_ALL.map(entry => [entry.id, entry]));
   const changed = list.filter(entry => !seeds.has(entry.id) || JSON.stringify(entry) !== JSON.stringify(seeds.get(entry.id)));
-  const tombstones = SEED_ALL.filter(entry => !ids.has(entry.id)).map(entry => ({ ...entry, deleted: true }));
+  const tombstones = SEED_ALL.filter(entry => !ids.has(entry.id)).map(entry => ({ id: entry.id, deleted: true }));
   saveInBackground('knowledge', [...changed, ...tombstones]);
 }
 
 /** Serialize the ENABLED knowledge entries into the block the backend injects. */
-export function kbToText(list: KBEntry[]): string {
-  return list
-    .filter((e) => e.enabled !== false)
-    .map((e) => `【${e.kind === 'case' ? '案例' : '法条'}·${e.category}】${e.title}\n${e.content}`)
-    .join('\n\n');
+export function kbToText(list: KBEntry[], query = '', date = beijingDate()): string {
+  const tokens = new Set(query.toLowerCase().match(/[a-z0-9]+/g) || []);
+  for (const word of query.match(/[\u3400-\u9fff]+/g) || []) {
+    for (let i = 1; i < word.length; i++) tokens.add(word.slice(i-1, i+1));
+  }
+  const focus: [RegExp, string[]][] = [
+    [/商标|标识/, ['law-tm19-57','law-tm19-59','law-tm26-72','law-tm26-73','law-tmCourt-9','law-tmCourt-10','law-tmCourt-11','law-tmCourt-12']],
+    [/著作权|作品|开源|许可证/, ['law-cr-3','law-cr-10','law-cr-24','law-cr-26','law-software-8','law-software-16','law-cr-reg-21']],
+    [/职务发明|成果保护|研发成果/, ['law-pat-6','law-pat-16','law-cr-18','law-software-13','law-uc-10']],
+    [/商业秘密|保密/, ['law-uc-10','law-uc-22','law-labor-23']],
+    [/竞业/, ['law-labor-23','law-labor-24','law-labor-90']],
+  ];
+  const preferred = new Set(focus.filter(([pattern]) => pattern.test(query)).flatMap(([,ids]) => ids));
+  const eligible = list.filter(e => e.enabled !== false && !e.legacyReference && (!e.official || lawStatus(e,date) === '现行有效'));
+  const ranked = eligible.map(e => {
+    let score = preferred.has(e.id) ? 80 : 0;
+    for (const term of tokens) score += (e.title.includes(term) ? 6 : 0) + (e.content.includes(term) ? 1 : 0);
+    const number = e.id.split('-').at(-1);
+    if (e.official && query.includes(e.title.split(' ')[0]) && (query.includes(e.title.split(' ')[1]) || query.includes('第'+number+'条'))) score += 200;
+    return { e, score };
+  }).sort((a,b) => b.score - a.score);
+  return ranked.slice(0,16).map(({e}) => e.official
+    ? '【法规原文 '+e.id+'】'+e.title+' · '+e.official.authority+' · '+e.official.version+' · '+e.official.source_url+'\n'+e.content
+    : '【用户参考资料·'+e.kind+'】'+e.title+'\n'+e.content).join('\n\n');
 }

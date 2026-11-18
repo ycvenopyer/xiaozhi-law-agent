@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace frontend",
+    "test:workbench": "tsx --test scripts/workbench.test.ts",
     "test:edgeone": "tsx --test scripts/edgeone.test.ts",
     "test:database": "tsx --test scripts/cloudbase-db.test.ts",
     "test:cloudbase-key": "tsx --test scripts/cloudbase-key.test.ts"

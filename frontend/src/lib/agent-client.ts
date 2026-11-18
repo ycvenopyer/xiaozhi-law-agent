@@ -7,6 +7,8 @@ import type { CustomModelRequest } from './custom-models';
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 
+export type WorkbenchMode = 'compare' | 'infringement' | 'compliance' | 'draft';
+
 export interface IpNews {
   date: string;
   articles: { title: string; url: string; source: string; summary: string }[];
@@ -42,6 +44,7 @@ export async function* streamChat(
     model?: string;
     signal?: AbortSignal;
     knowledge?: string;
+    workflow?: WorkbenchMode;
     customModel?: CustomModelRequest;
     conversationId?: string;
     assistantMessageId?: string;
@@ -71,7 +74,7 @@ export async function* streamChat(
       return images.length ? { role: m.role, content, images } : { role: m.role, content };
     }));
 
-  const body = serializeRequest({ messages: payload, model: opts?.model, knowledge: opts?.knowledge,
+  const body = serializeRequest({ messages: payload, model: opts?.model, workflow: opts?.workflow, knowledge: opts?.knowledge,
     customModel: opts?.customModel, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId });
 
   const res = await fetch('/api/agent/chat', {
