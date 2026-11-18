@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { runAgent, extractDossier } from './llm';
+import { runAgent, extractDossier, streamCompletions } from './llm';
+import { customModelSchema, customProvider } from './custom-provider';
 import { MODEL_REGISTRY, listProviders } from './providers';
 import { upload, parseFile } from './files';
 import { identity, recordRpc, type UserRecord } from '../cloudbase';
@@ -17,23 +18,50 @@ const messageSchema = z.object({
 });
 const chatSchema = z.object({
   messages: z.array(messageSchema).min(1).max(60), model: z.string(),
+  customModel: customModelSchema.optional(),
   knowledge: z.string().optional(), dossier: z.string().optional(),
   conversationId: z.string().min(1).max(200), assistantMessageId: z.string().min(1).max(200),
 });
 
-function selectedModel(id: string, hasImages: boolean) {
-  const model = MODEL_REGISTRY.find(provider => provider.id === id);
+function selectedModel(id: string, hasImages: boolean, custom?: z.infer<typeof customModelSchema>) {
+  const model = id.startsWith('custom-')
+    ? custom && customProvider(id, custom)
+    : MODEL_REGISTRY.find(provider => provider.id === id);
   if (!model || !model.apiKey) throw new AppError(400, '所选模型不存在或未配置。');
   if (hasImages && !model.vision) throw new AppError(400, '图片分析需要选择支持视觉的模型，不会自动切换供应商。');
   return model;
 }
+
+agentRouter.post('/custom-model/test', async (req, res) => {
+  const parsed = customModelSchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, '请核对 Base URL、API Key 和模型 ID。');
+  const provider = customProvider('custom-test', parsed.data);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  const stop = () => controller.abort();
+  res.on('close', stop);
+  try {
+    for await (const delta of streamCompletions(
+      [{ role: 'user', content: 'Reply OK.' }], provider, controller.signal, false, 128,
+    )) {
+      if (delta.content?.trim()) return res.json({ ok: true });
+    }
+  } catch {
+    // Upstream diagnostics can contain provider credentials or URLs.
+  } finally {
+    clearTimeout(timer);
+    res.off('close', stop);
+  }
+  if (!res.destroyed) return res.status(502).json({ message: '未收到模型回复，请核对接口地址、API Key、模型 ID 和流式输出支持。' });
+  return undefined;
+});
 
 agentRouter.post('/chat', async (req: Request, res: Response) => {
   const parsed = chatSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: '请求格式不正确或上下文过长，请新建对话。' });
   const input = parsed.data;
   const user = identity(res);
-  const provider = selectedModel(input.model, input.messages.some(message => !!message.images?.length));
+  const provider = selectedModel(input.model, input.messages.some(message => !!message.images?.length), input.customModel);
   await requireModelConsent(user.token);
   const runId = randomUUID();
   const record = await recordRpc<UserRecord>(user.token, 'begin_chat', { p_id: input.conversationId, p_run: runId });

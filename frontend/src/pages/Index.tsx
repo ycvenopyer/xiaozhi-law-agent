@@ -1,24 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BookOpen, FolderOpen, PanelLeftOpen, ChevronRight } from 'lucide-react';
+import { BookOpen, ClipboardList, PanelLeftOpen, ChevronRight } from 'lucide-react';
 import { Sidebar } from '@/components/assistant/Sidebar';
 import { ProjectOverview } from '@/components/assistant/ProjectOverview';
 import { MessageList } from '@/components/assistant/MessageList';
 import { ChatInput, type RetrieveMode } from '@/components/assistant/ChatInput';
 import { EmptyState } from '@/components/assistant/EmptyState';
 import { KnowledgePanel } from '@/components/assistant/KnowledgePanel';
-import { streamChat, uploadFile, extractDossier } from '@/lib/agent-client';
+import { streamChat, uploadFile } from '@/lib/agent-client';
 import { loadSessions, saveSessions, newSessionId } from '@/lib/sessions';
 import { loadProjects, saveProjects } from '@/lib/projects';
-import {
-  loadDossiers,
-  saveDossiers,
-  newDossierId,
-  suggestName,
-  type SavedDossier,
-} from '@/lib/dossiers';
 import { loadKB, saveKB, kbToText, type KBEntry } from '@/lib/knowledge';
-import { CaseDossier } from '@/components/assistant/CaseDossier';
-import { AppearancePanel } from '@/components/assistant/AppearancePanel';
 import { Workbench } from '@/components/assistant/Workbench';
 import { ContractPanel } from '@/components/assistant/ContractPanel';
 import { loadAppearance, applyAppearance, watchSystemTheme, isDarkMode, type Appearance } from '@/lib/appearance';
@@ -30,11 +21,10 @@ import type {
   ToolCallView,
   ModelInfo,
   Project,
-  CaseDossier as Dossier,
 } from '@/types/agent';
-import { DOSSIER_CAUSES, EMPTY_DOSSIER, IMAGE_DOSSIER_RAW } from '@/types/agent';
-import { dossierToText } from '@/types/agent';
-import { AccountControls } from '@/components/assistant/CloudAccount';
+import { AccountControls, useAccountId } from '@/components/assistant/CloudAccount';
+import { CustomModelSettings } from '@/components/assistant/CustomModelSettings';
+import { customModelRequest, getModelKey, loadCustomModels, removeModelKey, saveCustomModels, setModelKey, type CustomModel } from '@/lib/custom-models';
 import { authHeaders } from '@/lib/cloudbase';
 import { flushCloudStore, getPrivacy, loadCollection, refreshConversation, reportSyncError, saveCollection, stageRecovery } from '@/lib/cloud-store';
 
@@ -89,74 +79,8 @@ function fileToImageDataUrl(file: File): Promise<string> {
   });
 }
 
-/** Map a free-form cause of action onto the fixed dropdown options. */
-function matchCause(v: string): string {
-  if (DOSSIER_CAUSES.includes(v)) return v;
-  if (/商标/.test(v)) return '商标侵权';
-  if (/专利/.test(v)) return '专利侵权';
-  if (/著作权|版权/.test(v)) return '著作权侵权';
-  if (/不正当竞争/.test(v)) return '不正当竞争';
-  if (/商业秘密/.test(v)) return '商业秘密';
-  return v;
-}
-
-/** Merge LLM-extracted dossier fields into the existing case file. */
-function mergeDossier(
-  existing: Dossier | undefined,
-  extracted: Record<string, unknown>,
-  raw?: string
-): Dossier {
-  const merged: Dossier = { ...EMPTY_DOSSIER, ...(existing || {}) };
-  // 重新识别同一份材料时，新结果应当覆盖旧结果（旧结果往往只填了部分字段）；
-  // 上传新材料时同样以新结果为准。仅在识别不出内容时保留原值。
-  for (const k of ['parties', 'cause', 'facts', 'claims', 'evidence'] as const) {
-    const v = extracted[k];
-    if (v == null) continue;
-    const norm = Array.isArray(v)
-      ? v.map((x) => String(x ?? '').trim()).filter(Boolean).join('；')
-      : String(v).trim();
-    if (!norm) continue;
-    merged[k] = k === 'cause' ? matchCause(norm) : norm;
-  }
-  if (raw) merged.raw = raw;
-  return merged;
-}
-
-// Local fallback: split the raw text by common Chinese case-file section
-// headings so the panel still shows something usable when the LLM fails or
-// returns empty fields. Title patterns are intentionally loose so different
-// drafts ("一、当事人" / "1. 当事人" / "当事人：" etc.) all match.
-function heuristicExtract(text: string): Record<string, string> {
-  const SECTION_PATTERNS: { key: string; re: RegExp }[] = [
-    { key: 'parties', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:当事人|原被告|诉讼参与人|原\s*告|被\s*告)[：:\s]/ },
-    { key: 'cause', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:案由|纠纷类型)[：:\s]/ },
-    { key: 'facts', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:基本事实|基本案情|案情简介|案情概述|事实与理由|案件事实|本院(?:经审理)?查明|经审理查明|查明事实|事实)[：:，,\s]/ },
-    { key: 'claims', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:诉讼请求|诉请|诉求|请求事项|请求判令|判决如下|判项|判令)[：:\s]/ },
-    { key: 'evidence', re: /(^|\n)\s*(?:[一二三四五六七八九十]?[、.]|\d+[、.．])?\s*(?:证据清单|证据目录|证据材料|证据列表|证据)[：:\s]/ },
-  ];
-  const positions: { key: string; start: number; headerLen: number }[] = [];
-  for (const { key, re } of SECTION_PATTERNS) {
-    const m = text.match(re);
-    if (m && m.index !== undefined) {
-      positions.push({ key, start: m.index + (m[1] ? m[1].length : 0), headerLen: m[0].length - (m[1] ? m[1].length : 0) });
-    }
-  }
-  if (!positions.length) return {};
-  positions.sort((a, b) => a.start - b.start);
-  const out: Record<string, string> = {};
-  for (let i = 0; i < positions.length; i++) {
-    const cur = positions[i];
-    const next = positions[i + 1];
-    const headerEnd = cur.start + cur.headerLen;
-    const bodyEnd = next ? next.start : text.length;
-    const body = text.slice(headerEnd, bodyEnd).replace(/^\s*[:：]?\s*/, '');
-    out[cur.key] = body.replace(/\s+\n/g, '\n').trim().slice(0, 1500);
-  }
-  return out;
-}
-
-
 export default function Index() {
+  const accountId = useAccountId();
   const [initial] = useState(() => {
     const history = loadSessions();
     const projects = loadProjects();
@@ -174,12 +98,22 @@ export default function Index() {
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [customModels, setCustomModels] = useState(() => loadCustomModels(accountId));
+  const [customSettingsOpen, setCustomSettingsOpen] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState('');
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     if (typeof localStorage === 'undefined') return 'zhipu-glm';
-    return localStorage.getItem('agent-model') || 'zhipu-glm';
+    return localStorage.getItem(`agent-model:${accountId}`) || localStorage.getItem('agent-model') || 'zhipu-glm';
   });
+  const selectedCustom = customModels.find(model => model.id === selectedModel);
+  const modelOptions = [
+    ...models,
+    ...customModels.map(model => ({
+      id: model.id, label: model.label, provider: model.provider, free: false,
+      vision: model.vision, available: Boolean(getModelKey(accountId, model)),
+    })),
+  ];
   const [kb, setKb] = useState<KBEntry[]>(() => loadKB());
   const [kbEnabled, setKbEnabled] = useState<boolean>(() => {
     if (typeof localStorage === 'undefined') return true;
@@ -187,14 +121,9 @@ export default function Index() {
     return v === null ? true : v === '1';
   });
   const [kbOpen, setKbOpen] = useState(false);
-  const [dossierOpen, setDossierOpen] = useState(false);
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const [contractOpen, setContractOpen] = useState(false);
-  const [dossierBusy, setDossierBusy] = useState(false);
-  const [library, setLibrary] = useState<SavedDossier[]>(() => loadDossiers());
-  const modelName = models.find(model => model.id === selectedModel)?.label || selectedModel;
   const [note, setNote] = useState<string | null>(null);
   const noteTimer = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -216,12 +145,17 @@ export default function Index() {
       if (signal?.aborted) return;
       setModels(list);
       const firstAvailable = list.find(model => model.available);
-      setSelectedModel(previous => list.some(model => model.id === previous && model.available) ? previous : firstAvailable?.id || previous);
+      setSelectedModel(previous => {
+        const custom = loadCustomModels(accountId).find(model => model.id === previous);
+        if (custom) return previous;
+        if (list.some(model => model.id === previous && model.available)) return previous;
+        return firstAvailable?.id || previous;
+      });
     })
     .catch((error: unknown) => {
       if (!signal?.aborted) setModelsError(error instanceof Error ? error.message : '模型列表加载失败，请检查网络后重试。');
     })
-    .finally(() => { if (!signal?.aborted) setModelsLoading(false); }), []);
+    .finally(() => { if (!signal?.aborted) setModelsLoading(false); }), [accountId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -236,10 +170,35 @@ export default function Index() {
     return () => query.removeEventListener('change', update);
   }, []);
 
-  // Persist the chosen model and keep the sidebar label in sync.
   useEffect(() => {
-    localStorage.setItem('agent-model', selectedModel);
-  }, [selectedModel]);
+    localStorage.setItem(`agent-model:${accountId}`, selectedModel);
+  }, [accountId, selectedModel]);
+
+  function saveModel(model: CustomModel, key: string) {
+    const next = [...customModels.filter(item => item.id !== model.id), model];
+    setModelKey(accountId, model, key);
+    saveCustomModels(accountId, next);
+    setCustomModels(next);
+    setSelectedModel(model.id);
+  }
+
+  function deleteModel(id: string) {
+    const next = customModels.filter(model => model.id !== id);
+    saveCustomModels(accountId, next);
+    removeModelKey(accountId, id);
+    setCustomModels(next);
+    if (selectedModel === id) {
+      const fallback = models.find(model => model.available)?.id || next.find(model => getModelKey(accountId, model))?.id;
+      setSelectedModel(fallback || 'zhipu-glm');
+    }
+  }
+
+  const modelRequest = useCallback(() => {
+    if (!selectedModel.startsWith('custom-')) return undefined;
+    const key = selectedCustom && getModelKey(accountId, selectedCustom);
+    if (!selectedCustom || !key) throw new Error('请在自定义模型中重新填写 API Key，或选择其他模型。');
+    return customModelRequest(selectedCustom, key);
+  }, [accountId, selectedCustom, selectedModel]);
 
   // Persist whenever sessions change.
   useEffect(() => {
@@ -289,16 +248,10 @@ export default function Index() {
     }
   }, [kbEnabled]);
 
-  // Persist the dossier library so previously recognized case files stay
-  // available for review and reuse across conversations.
-  useEffect(() => {
-    saveDossiers(library);
-  }, [library]);
-
   const current = sessions.find((s) => s.id === currentId) || null;
   const viewedProject = projects.find(project => project.id === projectViewId);
   const currentProject = viewedProject || projects.find(project => project.id === current?.projectId);
-  const workspaceBusy = streaming || dossierBusy;
+  const workspaceBusy = streaming;
 
   function closeMobileSidebar() { if (window.matchMedia('(max-width: 767px)').matches) setSidebarOpen(false); }
 
@@ -414,160 +367,14 @@ export default function Index() {
    * conversation already links to a library entry, that entry is updated in
    * place instead of piling up duplicates from repeated uploads.
    */
-  const archiveDossier = useCallback(
-    (dossier: Dossier, raw: string, sessionId?: string) => {
-      setLibrary((prev) => {
-        const existingIdx = prev.findIndex((it) => it.sourceSessionId === (sessionId || current?.id));
-        const now = Date.now();
-        if (existingIdx >= 0) {
-          const next = [...prev];
-          const old = next[existingIdx];
-          next[existingIdx] = {
-            ...old,
-            dossier,
-            raw,
-            name: old.name || suggestName(dossier),
-            updatedAt: now,
-          };
-          return [next[existingIdx], ...next.filter((_, i) => i !== existingIdx)];
-        }
-        const item: SavedDossier = {
-          id: newDossierId(),
-          name: suggestName(dossier, prev.length),
-          dossier,
-          raw,
-          sourceSessionId: sessionId || current?.id,
-          createdAt: now,
-          updatedAt: now,
-        };
-        return [item, ...prev];
-      });
-    },
-    [current?.id]
-  );
-
-  /** Open a saved case file in the dossier panel of the current conversation. */
-  const useSavedDossier = useCallback(
-    (item: SavedDossier) => {
-      if (streaming) { showNote('请等待当前回答保存后再切换卷宗。'); return; }
-      const next: Dossier = { ...item.dossier, raw: item.raw };
-      updateCurrent((s) => ({ ...s, dossier: next }));
-      setLibrary((prev) =>
-        prev.map((it) => (it.id === item.id ? { ...it, sourceSessionId: current?.id, updatedAt: Date.now() } : it))
-      );
-      showNote(`已启用卷宗「${item.name}」，本对话将结合该案卷作答`);
-    },
-    [updateCurrent, current?.id, streaming]
-  );
-
-  const renameSavedDossier = useCallback((id: string, name: string) => {
-    setLibrary((prev) =>
-      prev.map((it) => (it.id === id ? { ...it, name: name.trim() || it.name, updatedAt: Date.now() } : it))
-    );
-  }, []);
-
-  const deleteSavedDossier = useCallback((id: string) => {
-    setLibrary((prev) => prev.filter((it) => it.id !== id));
-  }, []);
-
-  /** Mirror edits made in the panel back into the linked library entry. */
-  const handleDossierChange = useCallback(
-    (d: Dossier) => {
-      if (streaming) { showNote('请等待当前回答保存后再修改卷宗。'); return; }
-      updateCurrent((s) => ({ ...s, dossier: d }));
-      setLibrary((prev) => {
-        const idx = prev.findIndex((it) => it.sourceSessionId === current?.id);
-        if (idx < 0) return prev;
-        const next = [...prev];
-        const old = next[idx];
-        next[idx] = {
-          ...old,
-          dossier: d,
-          name: old.name || suggestName(d),
-          updatedAt: Date.now(),
-        };
-        return [next[idx], ...next.filter((_, i) => i !== idx)];
-      });
-    },
-    [updateCurrent, current?.id, streaming]
-  );
-
-  const handleDossierUpload = useCallback(
-    async (input: File | { text: string; name?: string }) => {
-      if (!current || dossierBusy || streaming) return;
-      setDossierBusy(true);
-      try {
-        const payload: { text?: string; images?: string[]; model?: string } = { model: selectedModel };
-        const sourceFiles: AttachedFile[] = [];
-        let raw = '';
-        if (!(input instanceof File)) {
-          if (!input.text.trim()) throw new Error('粘贴内容为空');
-          payload.text = input.text;
-          raw = input.text;
-        } else {
-          const file = input;
-          if (file.type.startsWith('image/')) {
-            sourceFiles.push(await uploadFile(file));
-            payload.images = [await fileToImageDataUrl(file)];
-            raw = IMAGE_DOSSIER_RAW;
-          } else {
-            const parsed = await uploadFile(file);
-            sourceFiles.push(parsed);
-            if (!parsed.text.trim()) throw new Error('未能从文件提取文本（可能是扫描件或空文件）');
-            payload.text = parsed.text;
-            raw = parsed.text;
-          }
-        }
-        // 1) Try LLM extraction; the local heading-based splitter then runs
-        //    regardless and tops up any fields the model left empty.
-        let fields: Record<string, string> = {};
-        let fallback = false;
-        try {
-          if (!getPrivacy()) throw new Error('禁止外发模式，使用本地章节提取');
-          fields = await extractDossier(payload);
-          const filled = ['parties', 'cause', 'facts', 'claims', 'evidence'].filter(
-            (k) => (fields[k] || '').trim()
-          ).length;
-          if (filled === 0) fallback = true;
-        } catch {
-          fields = {};
-          fallback = true;
-        }
-        const heur = heuristicExtract(raw);
-        for (const k of ['parties', 'cause', 'facts', 'claims', 'evidence'] as const) {
-          if (!fields[k]?.trim() && heur[k]?.trim()) fields[k] = heur[k];
-        }
-        const next = mergeDossier(current.dossier, fields, raw);
-        if (sourceFiles.length) next.sourceFiles = [...(next.sourceFiles || []), ...sourceFiles];
-        updateCurrent((s) => ({ ...s, dossier: next }));
-        archiveDossier(next, raw);
-        setDossierOpen(true);
-        showNote(
-          fallback
-            ? '模型提取失败，已按章节标题做本地兜底拆分，请人工核对'
-            : '卷宗已自动识别，已填入卷宗面板并存入库中'
-        );
-      } catch (e) {
-        showNote((e as Error).message || '卷宗识别失败');
-      } finally {
-        setDossierBusy(false);
-      }
-    },
-    [current, dossierBusy, updateCurrent, archiveDossier, selectedModel, streaming]
-  );
-
-  /** Re-run smart recognition on the saved raw material (text-based only). */
-  const handleDossierReExtract = useCallback(() => {
-    const raw = current?.dossier?.raw?.trim();
-    if (!raw || raw === IMAGE_DOSSIER_RAW || dossierBusy) return;
-    handleDossierUpload({ text: raw });
-  }, [current, dossierBusy, handleDossierUpload]);
-
   const submit = useCallback(
-    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[]) => {
+    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[], onStart?: () => void) => {
       if ((!text.trim() && !attachFiles.length) || streaming || !current) return;
       if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
 
+      let customModel;
+      try { customModel = modelRequest(); }
+      catch (error) { showNote((error as Error).message); return; }
       const userMsg: ChatMessage = makeMsg('user', text);
       if (attachFiles.length) userMsg.files = attachFiles;
       const assistantMsg: ChatMessage = makeMsg('assistant');
@@ -582,6 +389,7 @@ export default function Index() {
         updatedAt: Date.now(),
       };
       const nextSessions = sessions.map(session => session.id === current.id ? nextSession : session);
+      onStart?.();
       setSessions(nextSessions);
 
       setStreaming(true);
@@ -598,9 +406,9 @@ export default function Index() {
           baseHistory ? [...baseHistory, userMsg] : [...current!.messages, userMsg],
           {
           model: selectedModel,
+          customModel,
           signal: ac.signal,
           knowledge: kbEnabled ? kbToText(kb) : '',
-          dossier: current!.dossier ? dossierToText(current!.dossier) : '',
           conversationId: current.id,
           assistantMessageId: assistantMsg.id,
         })) {
@@ -682,16 +490,16 @@ export default function Index() {
         }
       }
     },
-    [streaming, current, selectedModel, updateCurrent, kb, kbEnabled, sessions]
+    [streaming, current, selectedModel, modelRequest, updateCurrent, kb, kbEnabled, sessions]
   );
 
   const handleSend = useCallback(() => {
     const text = input.trim();
     if ((!text && files.length === 0) || streaming) return;
-    if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
-    submit(text, files);
-    setInput('');
-    setFiles([]);
+    void submit(text, files, undefined, () => {
+      setInput('');
+      setFiles([]);
+    });
   }, [input, files, streaming, submit]);
 
   const handleRetrieve = useCallback((mode: RetrieveMode, payload: Parameters<React.ComponentProps<typeof ChatInput>['onRetrieve']>[1]) => {
@@ -700,14 +508,12 @@ export default function Index() {
       : [['关键词', payload.keyword], ['案由', payload.cause], ['案件类型', payload.caseType], ['审理程序', payload.procedure], ['法院层级', payload.courtLevel], ['年份', payload.year]];
     const conditions = fields.filter(([, value]) => value).map(([name, value]) => `${name}：${value}`).join('\n');
     const task = mode === 'law'
-      ? '请根据下列条件，从本次提供的知识库、卷宗和附件中检索相关法条，列出法律名称、条文序号、材料中的原文及适用要点。'
-      : '请根据下列条件，从本次提供的知识库、卷宗和附件中检索类似案例，列出材料中的案号、法院、关键事实、争议焦点、裁判理由，以及与本案的异同。';
+      ? '请根据下列条件，从本次提供的知识库和附件中检索相关法条，列出法律名称、条文序号、材料中的原文及适用要点。'
+      : '请根据下列条件，从本次提供的知识库和附件中检索类似案例，列出材料中的案号、法院、关键事实、争议焦点、裁判理由，以及与本案的异同。';
     const detail = payload.depth === 'deep'
       ? '请逐项分析，说明匹配与不匹配的条件、证据来源和需要补充核实的信息。'
       : '请优先列出最相关的结果，简要说明理由。';
-    if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
-    void submit(`${task}\n${conditions}\n${detail}\n当前不提供网页搜索。仅引用所提供材料中实际存在的条文、案号和链接；没有匹配资料时明确说明，并给出后续人工核验的方向。`, files);
-    setFiles([]);
+    void submit(`${task}\n${conditions}\n${detail}\n当前不提供网页搜索。仅引用所提供材料中实际存在的条文、案号和链接；没有匹配资料时明确说明，并给出后续人工核验的方向。`, files, undefined, () => setFiles([]));
   }, [files, submit]);
 
   const stop = useCallback(() => {
@@ -728,14 +534,9 @@ export default function Index() {
       if (!userMsg.content.trim()) return;
       // submit 会把新用户消息拼在历史之后，这里只需取该提问之前的部分
       const history = msgs.slice(0, userIdx);
-      updateCurrent((s) => ({
-        ...s,
-        messages: s.messages.slice(0, userIdx),
-        updatedAt: Date.now(),
-      }));
       submit(userMsg.content, userMsg.files || [], history);
     },
-    [current, streaming, updateCurrent, submit]
+    [current, streaming, submit]
   );
 
   /** 编辑用户消息后原地重发：截断该条及之后的消息，用新内容重新提交。 */
@@ -749,21 +550,17 @@ export default function Index() {
       if (idx < 0 || msgs[idx].role !== 'user') return;
       const originalFiles = msgs[idx].files || [];
       const history = msgs.slice(0, idx);
-      updateCurrent((s) => ({
-        ...s,
-        messages: s.messages.slice(0, idx),
-        updatedAt: Date.now(),
-      }));
       submit(text, originalFiles, history);
     },
-    [current, streaming, updateCurrent, submit]
+    [current, streaming, submit]
   );
 
-  /** 让助理基于当前模型/知识库/卷宗生成一段纯文本（用于事务台）。 */
+  /** 让助理基于当前模型/知识库生成一段纯文本（用于事务台）。 */
   const generateText = useCallback(
     async (prompt: string, onToken: (text: string) => void): Promise<string> => {
       if (streaming) throw new Error('请等待当前生成结束。');
       if (!getPrivacy()) throw new Error('当前禁止向模型外发资料，请先在账号与隐私中明确授权。');
+      const customModel = modelRequest();
       const userMessage = makeMsg('user', prompt);
       const assistantMessage = { ...makeMsg('assistant'), status: 'generating' as const };
       const session: Session = { id: newSessionId(), title: firstLine(prompt), messages: [userMessage, assistantMessage], createdAt: Date.now(), updatedAt: Date.now() };
@@ -774,9 +571,8 @@ export default function Index() {
       try {
         await saveCollection('sessions', nextSessions); await flushCloudStore();
         for await (const ev of streamChat([userMessage], {
-          model: selectedModel, signal: controller.signal,
+          model: selectedModel, customModel, signal: controller.signal,
           knowledge: kbEnabled ? kbToText(kb) : '',
-          dossier: current?.dossier ? dossierToText(current.dossier) : '',
           conversationId: session.id, assistantMessageId: assistantMessage.id,
         })) {
           if (ev.type === 'error') throw new Error(ev.message);
@@ -793,7 +589,7 @@ export default function Index() {
         setStreaming(false); abortRef.current = null;
       }
     },
-    [selectedModel, kb, kbEnabled, current, sessions, streaming]
+    [selectedModel, modelRequest, kb, kbEnabled, sessions, streaming]
   );
 
   return (
@@ -813,10 +609,8 @@ export default function Index() {
         onRenameProject={renameProject}
         onDeleteProject={deleteProject}
         onOpenProject={openProject}
-        modelName={modelName}
-        onOpenAppearance={() => setAppearanceOpen(true)}
-        onOpenWorkbench={() => setWorkbenchOpen(true)}
         right={appearance.sidebarSide === 'right'}
+        footer={<AccountControls disabled={streaming} appearance={appearance} onAppearanceChange={setAppearance} />}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         disabled={workspaceBusy}
@@ -831,7 +625,6 @@ export default function Index() {
             私人云端空间
           </span>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
-            <AccountControls disabled={streaming || dossierBusy} />
             <button
               onClick={() => setKbOpen(true)}
               className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[0.78rem] text-muted-foreground hover:border-primary/40 hover:text-foreground"
@@ -841,12 +634,12 @@ export default function Index() {
               知识库
             </button>
             <button
-              onClick={() => setDossierOpen(true)}
+              onClick={() => setWorkbenchOpen(true)}
               className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[0.78rem] text-muted-foreground hover:border-primary/40 hover:text-foreground"
-              title="案情卷宗"
+              title="事务台"
             >
-              <FolderOpen className="h-3.5 w-3.5" />
-              卷宗
+              <ClipboardList className="h-3.5 w-3.5" />
+              事务台
             </button>
           </div>
         </div>
@@ -878,14 +671,13 @@ export default function Index() {
           disabled={streaming || !current}
           onRetrieve={handleRetrieve}
           onOpenContract={() => setContractOpen(true)}
-          onDossierFile={handleDossierUpload}
-          dossierBusy={dossierBusy}
-          models={models}
+          models={modelOptions}
           selectedModel={selectedModel}
           onModelChange={setSelectedModel}
           modelsLoading={modelsLoading}
           modelsError={modelsError}
           onRetryModels={() => { setModelsLoading(true); setModelsError(''); void loadModels(); }}
+          onManageCustomModels={() => setCustomSettingsOpen(true)}
         />}
       </main>
 
@@ -898,35 +690,16 @@ export default function Index() {
         onToggleEnabled={setKbEnabled}
       />
 
-      <CaseDossier
-        open={dossierOpen}
-        onClose={() => setDossierOpen(false)}
-        session={current}
-        busy={dossierBusy || streaming}
-        onReExtract={handleDossierReExtract}
-        library={library}
-        onUseSaved={useSavedDossier}
-        onRenameSaved={renameSavedDossier}
-        onDeleteSaved={deleteSavedDossier}
-        onUploadFile={handleDossierUpload}
-        onChange={handleDossierChange}
-      />
-
-      <AppearancePanel
-        open={appearanceOpen}
-        onClose={() => setAppearanceOpen(false)}
-        value={appearance}
-        onChange={setAppearance}
-      />
-
       <Workbench
         open={workbenchOpen}
         onClose={() => setWorkbenchOpen(false)}
         onGenerate={generateText}
-        dossierCaseName={current?.dossier?.parties}
       />
 
-      <ContractPanel open={contractOpen} onClose={() => setContractOpen(false)} onGenerate={generateText} disabled={streaming || dossierBusy} />
+      <ContractPanel open={contractOpen} onClose={() => setContractOpen(false)} onGenerate={generateText} disabled={streaming} />
+      {customSettingsOpen && (
+        <CustomModelSettings accountId={accountId} models={customModels} onClose={() => setCustomSettingsOpen(false)} onSave={saveModel} onDelete={deleteModel} />
+      )}
     </div>
   );
 }

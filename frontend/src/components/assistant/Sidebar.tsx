@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from 'react';
-import { Check, ChevronDown, ChevronRight, ClipboardList, FolderClosed, FolderOpen, FolderPlus, MoreHorizontal, PanelLeftClose, Palette, Pencil, Pin, PinOff, Plus, SquarePen, Trash2 } from 'lucide-react';
+import { useState, type FormEvent, type ReactNode } from 'react';
+import { Check, ChevronDown, ChevronRight, FolderClosed, FolderOpen, FolderPlus, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, SquarePen, Trash2 } from 'lucide-react';
 import type { Project, Session } from '@/types/agent';
 import { sortConversations } from '@/lib/projects';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -20,9 +20,7 @@ interface Props {
   onRenameProject: (id: string, name: string) => void;
   onDeleteProject: (id: string) => void;
   onOpenProject: (id: string) => void;
-  modelName: string;
-  onOpenAppearance: () => void;
-  onOpenWorkbench: () => void;
+  footer: ReactNode;
   open: boolean;
   onClose: () => void;
   disabled: boolean;
@@ -140,7 +138,7 @@ export function Sidebar(props: Props) {
           {chatsOpen && <div className="space-y-0.5">{regular.length ? regular.map(row) : <p className="px-3 py-2 text-xs text-muted-foreground">暂无普通对话</p>}</div>}
         </section>
       </nav>
-      <div className="space-y-1 border-t border-sidebar-border px-3 py-3"><div className="truncate px-2 pb-1 text-[0.68rem] text-muted-foreground">模型：{props.modelName}</div><button onClick={props.onOpenAppearance} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs hover:bg-sidebar-accent"><Palette className="h-3.5 w-3.5" />界面外观</button><button onClick={props.onOpenWorkbench} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs hover:bg-sidebar-accent"><ClipboardList className="h-3.5 w-3.5" />事务台</button></div>
+      <div className="shrink-0 border-t border-sidebar-border p-2">{props.footer}</div>
     </aside>
     <Dialog open={!!dialog} onOpenChange={open => { if (!open) setDialog(null); }}><DialogContent className="sm:max-w-sm"><form onSubmit={submitDialog}>
       <DialogHeader><DialogTitle>{dialogTitle}</DialogTitle><DialogDescription>{dialog?.type === 'delete-project' ? '项目中的对话会移回普通对话列表，内容保留。' : dialog?.type === 'delete-session' ? '删除后无法从历史列表恢复此对话。' : dialog?.type === 'create-project' ? '把同一案件或主题的对话收纳在一个项目中。' : '修改显示名称，方便查找与整理。'}</DialogDescription></DialogHeader>

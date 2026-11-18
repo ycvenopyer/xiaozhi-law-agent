@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   CalendarClock,
   ClipboardList,
@@ -32,8 +32,6 @@ interface Props {
   onClose: () => void;
   /** 调用助理生成文本，实时回传 token。 */
   onGenerate: (prompt: string, onToken: (text: string) => void) => Promise<string>;
-  /** 当前卷宗的当事人，用于预填期限台账的案号。 */
-  dossierCaseName?: string;
 }
 
 type DocType = 'email' | 'warning' | 'lawyer';
@@ -50,7 +48,7 @@ const EMAIL_SUBTYPES = [
   { id: 'generic', name: '通用商务邮件' },
 ];
 
-export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props) {
+export function Workbench({ open, onClose, onGenerate }: Props) {
   const [tab, setTab] = useState<Tab>('deadline');
 
   return (
@@ -93,7 +91,7 @@ export function Workbench({ open, onClose, onGenerate, dossierCaseName }: Props)
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          {tab === 'deadline' && <DeadlineTab dossierCaseName={dossierCaseName} />}
+          {tab === 'deadline' && <DeadlineTab />}
           {tab === 'doc' && <DocTab onGenerate={onGenerate} />}
           {tab === 'news' && <NewsTab onGenerate={onGenerate} />}
           {tab === 'conflict' && <ConflictTab onGenerate={onGenerate} />}
@@ -116,7 +114,7 @@ function NewsTab({ onGenerate }: Pick<Props, 'onGenerate'>) {
     setCopied(false);
     try {
       await onGenerate(`请整理以下知识产权新闻或公告正文，形成供承办律师阅读的简报：
-1. 仅依据下面的新闻材料，按立法政策、典型案例、行业动态分类；不要把卷宗中的个案信息当作新闻。
+1. 仅依据下面的新闻材料，按立法政策、典型案例、行业动态分类。
 2. 每则列出标题、原文中提供的来源与发布日期、事件要点和可能的业务影响；缺少的来源或日期标为“未提供”。
 3. 区分材料明确陈述的事实与分析判断，说明需要进一步核实的内容，不编造新闻、案号、日期或链接。
 4. 当前不提供网页搜索，不得宣称已获取今日最新新闻。
@@ -201,16 +199,12 @@ function TabButton({
 
 /* ----------------------------- 期限台账 ----------------------------- */
 
-function DeadlineTab({ dossierCaseName }: { dossierCaseName?: string }) {
+function DeadlineTab() {
   const [list, setList] = useState<Deadline[]>(() => loadDeadlines());
-  const [caseName, setCaseName] = useState(dossierCaseName || '');
+  const [caseName, setCaseName] = useState('');
   const [type, setType] = useState(DEADLINE_TYPES[0]);
   const [dueDate, setDueDate] = useState('');
   const [note, setNote] = useState('');
-
-  useEffect(() => {
-    if (dossierCaseName) setCaseName(dossierCaseName);
-  }, [dossierCaseName]);
 
   function persist(next: Deadline[]) {
     setList(next);
@@ -436,7 +430,7 @@ ${info}`;
   return (
     <div className="space-y-3">
       <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
-        选文件类型、填关键事实，一键生成可发送 / 可寄送的文书草稿。会结合当前卷宗内容撰写，生成后可复制修改。
+        选文件类型、填关键事实，一键生成可发送 / 可寄送的文书草稿。生成后可复制修改。
       </p>
 
       {/* 三类文件按钮 */}

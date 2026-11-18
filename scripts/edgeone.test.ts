@@ -119,6 +119,18 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
       assert.deepEqual(modelCalls, ['https://api.siliconflow.cn/v1/chat/completions'])
       assert.equal(savedStatus, 'complete')
     })
+    await t.test('custom model requests require login and the same work-data consent', async () => {
+      const config = { baseUrl: 'https://api.example.test/v1', model: 'test', apiKey: 'synthetic-key', vision: false, tools: false }
+      const previousCalls = modelCalls.length
+      await request(app).post('/api/agent/custom-model/test').send(config).expect(401)
+      consent = false
+      try {
+        await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'custom-test', customModel: config }).expect(403)
+      } finally { consent = true }
+      await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'custom-missing-key' }).expect(400)
+      await request(app).post('/api/agent/custom-model/test').set(auth).send({ ...config, baseUrl: 'https://localhost' }).expect(400)
+      assert.equal(modelCalls.length, previousCalls)
+    })
     await t.test('answers are persisted before done and SSE remains uncompressed', async () => {
       for (const path of ['/api/agent/chat', '/agent/chat']) {
         record = makeRecord()

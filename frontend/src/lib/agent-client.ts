@@ -2,6 +2,7 @@ import type { AgentEvent, AttachedFile, ChatMessage } from '@/types/agent';
 import { authHeaders } from './cloudbase';
 import { acceptRecord, type CloudRecord } from './cloud-store';
 import { imageDataUrl, storeOriginal } from './private-files';
+import type { CustomModelRequest } from './custom-models';
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
@@ -24,7 +25,7 @@ export async function* streamChat(
     model?: string;
     signal?: AbortSignal;
     knowledge?: string;
-    dossier?: string;
+    customModel?: CustomModelRequest;
     conversationId?: string;
     assistantMessageId?: string;
   }
@@ -54,7 +55,7 @@ export async function* streamChat(
     }));
 
   const body = serializeRequest({ messages: payload, model: opts?.model, knowledge: opts?.knowledge,
-    dossier: opts?.dossier, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId });
+    customModel: opts?.customModel, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId });
 
   const res = await fetch('/api/agent/chat', {
     method: 'POST',

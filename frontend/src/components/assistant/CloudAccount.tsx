@@ -1,5 +1,10 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
-import { LockKeyhole, Mail, ShieldCheck, X, Loader2, Download } from 'lucide-react';
+import { LockKeyhole, Mail, Loader2, Download, ChevronsUpDown, CircleHelp, LogOut, Palette, Settings2, ShieldCheck } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { AppearancePanel } from './AppearancePanel';
+import type { Appearance } from '@/lib/appearance';
+import { clearModelKeys } from '@/lib/custom-models';
 import { cloud, cloudConfig, authHeaders, requireCloud } from '@/lib/cloudbase';
 import { clearCloudStore, exportRecovery, flushCloudStore, getPrivacy, getSyncStatus, hydrateCloudStore,
   loadCollection, saveCollection, subscribeSync } from '@/lib/cloud-store';
@@ -9,6 +14,9 @@ import type { AttachedFile } from '@/types/agent';
 
 interface Account { id: string; email?: string }
 const Context = createContext<{ user: Account; logout: () => Promise<void> } | null>(null);
+export function useAccountId() {
+  return useContext(Context)?.user.id || '';
+}
 const field = 'w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary';
 const button = 'rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50';
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请重试。';
@@ -79,6 +87,7 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   async function logout() {
     await flushCloudStore();
     await requireCloud().auth().signOut();
+    if (user) clearModelKeys(user.id);
     setUser(null); clearCloudStore(); setSent(false); setCode(''); verify.current = null;
   }
 
@@ -88,7 +97,7 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
     <section className="w-full max-w-md rounded-2xl border border-border bg-card p-8 shadow-sm">
       <div className="mb-8 flex items-center gap-3"><img src="/xiaozhi-avatar.png" alt="" className="h-12 w-12 rounded-xl" /><div><p className="text-lg font-semibold">小知 · 私人工作空间</p><p className="mt-1 text-xs text-muted-foreground">知识产权办案助理</p></div></div>
       <h1 className="text-2xl font-semibold tracking-tight">登录后，继续你的工作</h1>
-      <p className="mb-6 mt-3 text-sm leading-6 text-muted-foreground">对话、知识库与卷宗按账号保存。第三方模型处理默认关闭，可在登录后单独开启。</p>
+      <p className="mb-6 mt-3 text-sm leading-6 text-muted-foreground">对话、知识库与附件按账号保存。第三方模型处理默认关闭，可在登录后单独开启。</p>
       {!cloud && <p role="alert" className="mb-4 text-sm text-destructive">{cloudConfig.error || '尚未配置 Publishable Key，请按部署文档完成环境变量配置并重新构建。'}</p>}
       <form onSubmit={sent ? signIn : sendCode} className="space-y-4">
         <label className="block text-sm">邮箱<input className={`${field} mt-2`} type="email" autoComplete="email" required value={email} disabled={sent || busy} onChange={event => setEmail(event.target.value)} /></label>
@@ -103,10 +112,17 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   </main>;
 }
 
-export function AccountControls({ disabled = false }: { disabled?: boolean }) {
+interface AccountControlsProps {
+  disabled?: boolean;
+  appearance: Appearance;
+  onAppearanceChange: (value: Appearance) => void;
+}
+
+export function AccountControls({ disabled = false, appearance, onAppearanceChange }: AccountControlsProps) {
   const account = useContext(Context);
   const sync = useSyncExternalStore(subscribeSync, getSyncStatus);
-  const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState<'settings' | 'help' | null>(null);
+  const [section, setSection] = useState<'privacy' | 'appearance'>('privacy');
   const [external, setExternal] = useState(getPrivacy);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -115,6 +131,7 @@ export function AccountControls({ disabled = false }: { disabled?: boolean }) {
   const [imported, setImported] = useState(() => loadCollection<{ id: string }>('settings').some(item => item.id === 'legacy-import'));
   const [notice, setNotice] = useState('');
   const [files, setFiles] = useState<AttachedFile[]>([]);
+  const trigger = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (getSyncStatus().pending || getSyncStatus().error) event.preventDefault(); };
@@ -128,44 +145,90 @@ export function AccountControls({ disabled = false }: { disabled?: boolean }) {
     finally { setBusy(false); }
   }
   const status = sync.error ? '保存失败' : sync.pending ? '保存中…' : '云端已同步';
+  const displayName = account.user.email || account.user.id;
+  function openSettings() {
+    setLegacy(previewLegacy());
+    setFiles(loadCollection<AttachedFile>('files'));
+    setExternal(getPrivacy());
+    setConfirmed(false);
+    setSection('privacy');
+    setDialog('settings');
+  }
   return <>
-    <button className={`${button} flex items-center gap-1.5 whitespace-nowrap py-1 text-xs`} onClick={() => { setLegacy(previewLegacy()); setFiles(loadCollection<AttachedFile>('files')); setOpen(true); }}><ShieldCheck className="h-3.5 w-3.5" />{status} · 账号</button>
-    {sync.error && <span role="alert" title={sync.error} className="text-xs text-destructive">请保留页面并核对保存状态</span>}
-    {open && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation" onClick={() => !busy && setOpen(false)}>
-      <section role="dialog" aria-modal="true" aria-labelledby="account-title" className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-xl" onClick={event => event.stopPropagation()}>
-        <div className="flex items-center justify-between"><h2 id="account-title" className="text-lg font-semibold">账号与隐私</h2><button aria-label="关闭" disabled={busy} onClick={() => setOpen(false)}><X className="h-5 w-5" /></button></div>
-        <p className="mt-2 break-all text-sm text-muted-foreground">{account.user.email || account.user.id}</p>
-        <div className="mt-5 rounded-xl border border-border p-4">
-          <h3 className="text-sm font-medium">第三方模型处理</h3>
-          <p className="mt-2 text-xs leading-6 text-muted-foreground">开启后，对话、附件提取文本、图片和启用的知识库／卷宗可能交给你所选择的模型服务。未公开专利、技术交底书和商业秘密请保持关闭。当前不提供网页搜索，跨模型自动回退已禁止。</p>
-          <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={external} disabled={busy || disabled || sync.pending || !!sync.error} onChange={event => {
-            const next = event.target.checked;
-            const previous = external;
-            setExternal(next);
-            void act(async () => {
-              try {
-                await saveCollection('settings', [{ id: 'privacy', externalModels: next, consentVersion: 1, updatedAt: Date.now() }], false);
-              } catch (cause) { setExternal(previous); throw cause; }
-            });
-          }} />我允许第三方模型处理工作资料</label>
-        </div>
-        <div className="mt-4 rounded-xl border border-border p-4">
-          <h3 className="text-sm font-medium">导入旧浏览器资料</h3>
-          <p className="mt-2 text-xs leading-6 text-muted-foreground">旧资料：{legacy.reduce((sum, item) => sum + item.count, 0)} 条。已有相同 ID 的云端记录会跳过；旧文档可能只有截断文本，不能恢复缺失的原件。建议先导出备份。</p>
-          <label className="mt-3 flex items-start gap-2 text-xs leading-5"><input type="checkbox" className="mt-1" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />我确认这些本地资料属于当前账号，并同意上传至该账号。</label>
-          <div className="mt-3 flex flex-wrap gap-2"><button className={button} onClick={exportLegacy}>导出本地备份</button><button className={button} disabled={!confirmed || disabled || busy || sync.pending || !!sync.error} onClick={() => void act(async () => {
-            await flushCloudStore(); const count = await importLegacy();
-            await saveCollection('settings', [{ id: 'legacy-import', completedAt: Date.now() }], false);
-            setNotice(`已导入 ${count} 条记录，正在重新加载工作空间。`); setImported(true); location.reload();
-          })}>导入当前账号</button></div>
-          {imported && <div className="mt-3 flex flex-wrap gap-2"><button className={button} onClick={() => location.reload()}>重新加载并核对</button><button className={button} onClick={() => { if (window.confirm('确认已核对云端资料并导出备份？此操作会清除本浏览器的旧业务记录。')) { clearLegacy(); setLegacy(previewLegacy()); setNotice('已清理本地旧业务记录。'); } }}>清除本地旧记录</button></div>}
-        </div>
-        <div className="mt-4 rounded-xl border border-border p-4"><h3 className="text-sm font-medium">已保存的文件原件</h3><p className="my-2 text-xs text-muted-foreground">文件通过私有存储权限验证后下载。</p><ul className="max-h-40 space-y-2 overflow-y-auto">{files.map(file => <li key={file.id} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate">{file.name}</span><button aria-label={`下载 ${file.name}`} disabled={busy} onClick={() => void act(() => downloadOriginal(file))}><Download className="h-4 w-4" /></button></li>)}</ul></div>
-        {(error || sync.error) && <p role="alert" className="mt-3 text-sm text-destructive">{error || sync.error}</p>}
-        {sync.error && <button className={`${button} mt-3`} onClick={exportRecovery}>导出未保存资料备份</button>}
-        {notice && <p role="status" className="mt-3 text-sm">{notice}</p>}
-        <button className={`${button} mt-5`} disabled={busy || disabled || sync.pending || !!sync.error} onClick={() => void act(account.logout)}>退出登录</button>
-      </section>
-    </div>}
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button ref={trigger} type="button" aria-label="账号菜单" className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left hover:bg-sidebar-accent focus-visible:outline-2 focus-visible:outline-primary data-[state=open]:bg-sidebar-accent">
+          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-full bg-primary/12 text-xs font-semibold text-primary">{displayName.slice(0, 2).toUpperCase()}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium" title={displayName}>{displayName}</span>
+            <span className={`mt-0.5 flex items-center gap-1 text-[0.65rem] ${sync.error ? 'text-destructive' : 'text-muted-foreground'}`}><ShieldCheck className="size-3" />{status}</span>
+          </span>
+          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-44 rounded-xl p-1.5" aria-label="账号菜单">
+        <DropdownMenuItem className="cursor-pointer rounded-lg py-2.5" onSelect={openSettings}><Settings2 />设置</DropdownMenuItem>
+        <DropdownMenuItem className="cursor-pointer rounded-lg py-2.5" onSelect={() => setDialog('help')}><CircleHelp />帮助</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="cursor-pointer rounded-lg py-2.5" disabled={busy || disabled || sync.pending || !!sync.error} onSelect={() => void act(account.logout)}><LogOut />退出登录</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+    {!dialog && (error || sync.error) && <p role="alert" className="px-2 pb-1 text-xs text-destructive">{error || '请在设置中查看保存状态'}</p>}
+    <Dialog open={dialog !== null} onOpenChange={open => { if (!open && !busy) setDialog(null); }}>
+      {dialog && <DialogContent showCloseButton={false} onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }} className="max-h-[90dvh] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-2xl">
+        <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+          <div className="min-w-0 space-y-1.5">
+            <DialogTitle>{dialog === 'settings' ? '设置' : '帮助'}</DialogTitle>
+            <DialogDescription className="truncate">{dialog === 'settings' ? displayName : '小知工作空间使用指南'}</DialogDescription>
+          </div>
+          <button aria-label="关闭" disabled={busy} onClick={() => setDialog(null)} className="rounded-md px-2 text-lg leading-6 text-muted-foreground hover:bg-muted">×</button>
+        </header>
+        {dialog === 'help' ? <div className="space-y-4 overflow-y-auto p-5 text-sm leading-6">
+          <div><h3 className="font-medium">开始对话</h3><p className="text-muted-foreground">在设置里授权第三方模型处理，然后从输入框选择模型。检索法条和案例时，可通过知识库或普通附件提供参考材料。</p></div>
+          <div><h3 className="font-medium">配置自己的模型</h3><p className="text-muted-foreground">从模型菜单打开「自定义模型」，填写厂商、接口地址、模型 ID 和 API Key，可先测试连通性。</p></div>
+          <div><h3 className="font-medium">找回旧资料与附件</h3><p className="text-muted-foreground">在设置的「账号与隐私」中备份或导入旧浏览器资料，也可以下载已保存的文件原件。</p></div>
+        </div> : <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[9rem_minmax(0,1fr)] sm:grid-rows-1">
+          <nav aria-label="设置分类" className="flex gap-1 border-b border-border bg-muted/30 p-2 sm:flex-col sm:border-b-0 sm:border-r">
+            {([
+              ['privacy', '账号与隐私', ShieldCheck],
+              ['appearance', '界面外观', Palette],
+            ] as const).map(([id, label, Icon]) => <button type="button" key={id} aria-pressed={section === id} disabled={busy} onClick={() => setSection(id)} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${section === id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="size-4" />{label}</button>)}
+          </nav>
+          <div className="min-h-0 overflow-y-auto p-4 sm:p-5">
+            {section === 'appearance' ? <AppearancePanel value={appearance} onChange={onAppearanceChange} /> : <>
+              <div className="rounded-xl border border-border p-4">
+                <h3 className="text-sm font-medium">第三方模型处理</h3>
+                <p className="mt-2 text-xs leading-6 text-muted-foreground">开启后，你选择的模型服务可以处理对话、附件文本、图片及启用的知识库。整理未公开专利、技术交底书和商业秘密时，请按资料要求决定是否授权。</p>
+                <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={external} disabled={busy || disabled || sync.pending || !!sync.error} onChange={event => {
+                  const next = event.target.checked;
+                  const previous = external;
+                  setExternal(next);
+                  void act(async () => {
+                    try {
+                      await saveCollection('settings', [{ id: 'privacy', externalModels: next, consentVersion: 1, updatedAt: Date.now() }], false);
+                    } catch (cause) { setExternal(previous); throw cause; }
+                  });
+                }} />我允许第三方模型处理工作资料</label>
+              </div>
+              <div className="mt-4 rounded-xl border border-border p-4">
+                <h3 className="text-sm font-medium">导入旧浏览器资料</h3>
+                <p className="mt-2 text-xs leading-6 text-muted-foreground">旧资料：{legacy.reduce((sum, item) => sum + item.count, 0)} 条。已有相同 ID 的云端记录会跳过；旧文档可能只有截断文本，不能恢复缺失的原件。建议先导出备份。</p>
+                <label className="mt-3 flex items-start gap-2 text-xs leading-5"><input type="checkbox" className="mt-1" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />我确认这些本地资料属于当前账号，并同意上传至该账号。</label>
+                <div className="mt-3 flex flex-wrap gap-2"><button className={button} onClick={exportLegacy}>导出本地备份</button><button className={button} disabled={!confirmed || disabled || busy || sync.pending || !!sync.error} onClick={() => void act(async () => {
+                  await flushCloudStore(); const count = await importLegacy();
+                  await saveCollection('settings', [{ id: 'legacy-import', completedAt: Date.now() }], false);
+                  setNotice(`已导入 ${count} 条记录，正在重新加载工作空间。`); setImported(true); location.reload();
+                })}>导入当前账号</button></div>
+                {imported && <div className="mt-3 flex flex-wrap gap-2"><button className={button} onClick={() => location.reload()}>重新加载并核对</button><button className={button} onClick={() => { if (window.confirm('确认已核对云端资料并导出备份？此操作会清除本浏览器的旧业务记录。')) { clearLegacy(); setLegacy(previewLegacy()); setNotice('已清理本地旧业务记录。'); } }}>清除本地旧记录</button></div>}
+              </div>
+              <div className="mt-4 rounded-xl border border-border p-4"><h3 className="text-sm font-medium">已保存的文件原件</h3><p className="my-2 text-xs text-muted-foreground">文件通过私有存储权限验证后下载。</p><ul className="max-h-40 space-y-2 overflow-y-auto">{files.map(file => <li key={file.id} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate">{file.name}</span><button aria-label={`下载 ${file.name}`} disabled={busy} onClick={() => void act(() => downloadOriginal(file))}><Download className="h-4 w-4" /></button></li>)}</ul></div>
+              {(error || sync.error) && <p role="alert" className="mt-3 text-sm text-destructive">{error || sync.error}</p>}
+              {sync.error && <button className={`${button} mt-3`} onClick={exportRecovery}>导出未保存资料备份</button>}
+              {notice && <p role="status" className="mt-3 text-sm">{notice}</p>}
+            </>}
+          </div>
+        </div>}
+      </DialogContent>}
+    </Dialog>
   </>;
 }

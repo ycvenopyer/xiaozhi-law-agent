@@ -67,7 +67,8 @@ with sync_playwright() as p:
     page.get_by_text('私人云端空间', exact=True).wait_for()
     page.wait_for_load_state('networkidle')
     assert ('sessions','old-session') not in records, 'Legacy data was auto-imported'
-    page.get_by_role('button', name='云端已同步 · 账号').click()
+    page.get_by_role('button', name='账号菜单').click()
+    page.get_by_role('menuitem', name='设置', exact=True).click()
     page.get_by_role('dialog').wait_for()
     print('Account text:', page.get_by_role('dialog').inner_text()[:500])
     assert not page.get_by_label('我允许第三方模型处理工作资料').is_checked()
@@ -80,14 +81,17 @@ with sync_playwright() as p:
     assert ('sessions','old-session') in records
     assert records[('sessions','old-session')]['payload']['messages'][0]['content'] == '旧记录测试内容'
     assert page.evaluate("localStorage.getItem('agent_sessions_v1')") is not None
-    page.get_by_role('button', name='云端已同步 · 账号').click()
+    page.get_by_role('button', name='账号菜单').click()
+    page.get_by_role('menuitem', name='设置', exact=True).click()
     page.get_by_role('button', name='清除本地旧记录').wait_for()
     page.get_by_label('我允许第三方模型处理工作资料').check()
     page.wait_for_load_state('networkidle')
     assert records[('settings','privacy')]['payload']['externalModels'] is True
     page.get_by_label('我允许第三方模型处理工作资料').uncheck()
     page.wait_for_load_state('networkidle')
-    page.get_by_role('button', name='退出登录').click()
+    page.get_by_role('button', name='关闭', exact=True).click()
+    page.get_by_role('button', name='账号菜单').click()
+    page.get_by_role('menuitem', name='退出登录').click()
     page.get_by_role('heading', name='登录后，继续你的工作').wait_for()
     assert not page.get_by_text('旧记录测试内容', exact=True).count()
     assert not model_requests

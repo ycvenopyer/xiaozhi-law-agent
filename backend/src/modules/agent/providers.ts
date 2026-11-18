@@ -9,6 +9,8 @@ export interface ModelProvider {
   free: boolean;
   /** whether this model can understand images (vision input) */
   vision?: boolean;
+  tools?: boolean;
+  completion?: (body: string, signal: AbortSignal) => Promise<Response>;
 }
 
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';

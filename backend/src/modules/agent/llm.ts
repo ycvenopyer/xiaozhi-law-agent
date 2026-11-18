@@ -73,22 +73,23 @@ function toApiMessage(m: ChatMessage): unknown {
 const FIRST_BYTE_TIMEOUT_MS = 60_000;
 const IDLE_TIMEOUT_MS = 30_000;
 
-async function* streamCompletions(
+export async function* streamCompletions(
   messages: ChatMessage[],
   provider: ModelProvider,
   signal?: AbortSignal,
-  withTools = true
+  withTools = true,
+  maxTokens = env.LLM_MAX_TOKENS,
 ): AsyncGenerator<LLMDelta> {
   const url = `${provider.baseUrl}/chat/completions`;
   const body = {
     model: provider.model,
     messages: messages.map(toApiMessage),
-    tools: withTools ? availableTools() : undefined,
-    tool_choice: withTools ? 'auto' : undefined,
+    tools: withTools && provider.tools !== false ? availableTools() : undefined,
+    tool_choice: withTools && provider.tools !== false ? 'auto' : undefined,
     temperature: env.LLM_TEMPERATURE,
-    max_tokens: env.LLM_MAX_TOKENS,
+    max_tokens: maxTokens,
     stream: true,
-    stream_options: { include_usage: true },
+    stream_options: provider.completion ? undefined : { include_usage: true },
   };
 
   // Local controller so idle timeouts and early exits release the socket even
@@ -101,7 +102,7 @@ async function* streamCompletions(
   }
 
   try {
-    const res = await fetch(url, {
+    const res = provider.completion ? await provider.completion(JSON.stringify(body), localAc.signal) : await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -120,6 +121,7 @@ async function* streamCompletions(
     const decoder = new TextDecoder();
     let buffer = '';
     let firstChunk = true;
+    let receivedBytes = 0;
 
     const readChunk = (): Promise<{ done: boolean; value?: Uint8Array }> =>
       new Promise((resolve, reject) => {
@@ -143,6 +145,8 @@ async function* streamCompletions(
     while (true) {
       const { done, value } = await readChunk();
       if (done) break;
+      receivedBytes += value?.byteLength ?? 0;
+      if (provider.completion && receivedBytes > 8 * 1024 * 1024) throw new Error('模型流式响应超过大小限制。');
       buffer += decoder.decode(value, { stream: true });
 
       let nl: number;
@@ -392,7 +396,7 @@ export async function runAgent(
             assistant.content = (assistant.content || '') + delta.content;
             onEvent({ type: 'token', content: delta.content });
           }
-          if (delta.tool_calls) {
+          if (candidate.tools !== false && delta.tool_calls) {
             for (const tc of delta.tool_calls) {
               const i = tc.index;
               if (!acc[i]) acc[i] = { function: { arguments: '' } };

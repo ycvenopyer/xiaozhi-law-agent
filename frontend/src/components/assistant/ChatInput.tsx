@@ -1,5 +1,5 @@
 import { useState, useRef, type KeyboardEvent } from 'react';
-import { Paperclip, Send, Square, X, FileText, Scale, Gavel, FolderUp, FileSignature } from 'lucide-react';
+import { Paperclip, Send, Square, X, FileText, Scale, Gavel, FileSignature } from 'lucide-react';
 import type { AttachedFile, ModelInfo } from '@/types/agent';
 import { ModelSelector } from './ModelSelector';
 
@@ -29,8 +29,6 @@ interface Props {
       depth: 'fast' | 'deep';
     }
   ) => void;
-  onDossierFile: (input: File | { text: string; name?: string }) => void;
-  dossierBusy?: boolean;
   onOpenContract: () => void;
   models: ModelInfo[];
   selectedModel: string;
@@ -38,12 +36,12 @@ interface Props {
   modelsLoading: boolean;
   modelsError: string;
   onRetryModels: () => void;
+  onManageCustomModels: () => void;
 }
 
 export function ChatInput(props: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const dossierRef = useRef<HTMLInputElement>(null);
   const kwRef = useRef<HTMLInputElement>(null);
   const [popover, setPopover] = useState<RetrieveMode | null>(null);
   const [depth, setDepth] = useState<'fast' | 'deep'>('fast');
@@ -55,9 +53,6 @@ export function ChatInput(props: Props) {
   const [procedure, setProcedure] = useState('');
   const [courtLevel, setCourtLevel] = useState('');
   const [year, setYear] = useState('');
-  const [dossierPopover, setDossierPopover] = useState(false);
-  const [pastedText, setPastedText] = useState('');
-  const dossierPasteRef = useRef<HTMLTextAreaElement>(null);
 
   function handleKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -326,19 +321,6 @@ export function ChatInput(props: Props) {
             检索案例
           </button>
           <button
-            onClick={() => {
-              if (props.streaming || props.dossierBusy) return;
-              setDossierPopover(true);
-              setTimeout(() => dossierPasteRef.current?.focus(), 30);
-            }}
-            disabled={props.streaming || props.dossierBusy}
-            className="flex h-9 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-[0.78rem] text-muted-foreground hover:border-primary/40 hover:text-foreground disabled:opacity-40"
-            title="上传卷宗或粘贴文本，自动识别到卷宗面板"
-          >
-            <FolderUp className="h-3.5 w-3.5" />
-            {props.dossierBusy ? '识别中…' : '卷宗上传'}
-          </button>
-          <button
             onClick={() => props.onOpenContract?.()}
             disabled={props.streaming}
             className="flex h-9 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-[0.78rem] text-muted-foreground hover:border-primary/40 hover:text-foreground disabled:opacity-40"
@@ -347,17 +329,6 @@ export function ChatInput(props: Props) {
             <FileSignature className="h-3.5 w-3.5" />
             合同起草（审核）
           </button>
-          <input
-            ref={dossierRef}
-            type="file"
-            className="hidden"
-            accept="image/*,.pdf,.txt,.md,.doc,.docx"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) props.onDossierFile(f);
-              e.target.value = '';
-            }}
-          />
           <input
             ref={fileRef}
             type="file"
@@ -371,65 +342,6 @@ export function ChatInput(props: Props) {
           />
         </div>
 
-        {/* 卷宗上传弹窗(上传文档/粘贴文本) */}
-        {dossierPopover && (
-          <div className="absolute bottom-full left-2 right-2 mb-2 rounded-xl border border-primary/40 bg-card p-3 shadow-lg">
-            <div className="mb-2 flex items-center gap-1.5 text-[0.82rem] font-medium text-foreground">
-              <FolderUp className="h-4 w-4" />
-              卷宗上传 · 上传文档或粘贴文本
-            </div>
-            <div className="mb-2 flex flex-wrap gap-2">
-              <button
-                onClick={() => dossierRef.current?.click()}
-                disabled={props.dossierBusy}
-                className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[0.78rem] text-muted-foreground hover:border-primary/40 hover:text-foreground disabled:opacity-40"
-              >
-                <FolderUp className="h-3.5 w-3.5" />
-                选择文件
-              </button>
-              <span className="ml-auto text-[0.68rem] text-muted-foreground">
-                支持 pdf / word / txt / md / 图片
-              </span>
-            </div>
-            <textarea
-              ref={dossierPasteRef}
-              value={pastedText}
-              onChange={(e) => setPastedText(e.target.value)}
-              rows={5}
-              placeholder="或在此粘贴卷宗文本（合同/起诉状/答辩状/聊天记录/会议纪要等）…"
-              className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-            />
-            <div className="mt-2 flex justify-end gap-2">
-              <button
-                onClick={() => {
-                  setDossierPopover(false);
-                  setPastedText('');
-                }}
-                className="rounded-md px-2 py-1.5 text-[0.8rem] text-muted-foreground hover:bg-muted"
-              >
-                取消
-              </button>
-              <button
-                onClick={() => {
-                  const txt = pastedText.trim();
-                  if (!txt) {
-                    dossierPasteRef.current?.focus();
-                    return;
-                  }
-                  props.onDossierFile({ text: txt, name: '粘贴的卷宗文本' });
-                  setDossierPopover(false);
-                  setPastedText('');
-                }}
-                disabled={props.dossierBusy || !pastedText.trim()}
-                className="flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-[0.8rem] text-primary-foreground hover:opacity-90 disabled:opacity-40"
-              >
-                识别并填入卷宗面板
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 输入框行 */}
         <div className="px-3 pb-1 pt-2">
           <textarea
             ref={taRef}
@@ -442,7 +354,7 @@ export function ChatInput(props: Props) {
           />
         </div>
         <div className="flex items-center justify-end gap-2 px-3 pb-3">
-          <ModelSelector models={props.models} value={props.selectedModel} onChange={props.onModelChange} loading={props.modelsLoading} error={props.modelsError} onRetry={props.onRetryModels} disabled={props.streaming || props.dossierBusy} />
+          <ModelSelector models={props.models} value={props.selectedModel} onChange={props.onModelChange} loading={props.modelsLoading} error={props.modelsError} onRetry={props.onRetryModels} onManageCustom={props.onManageCustomModels} disabled={props.streaming} />
           {props.streaming ? (
             <button
               onClick={props.onStop}

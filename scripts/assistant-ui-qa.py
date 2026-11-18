@@ -20,6 +20,7 @@ with sync_playwright() as p:
     browser = p.chromium.launch(channel='msedge', headless=True)
     context = browser.new_context(viewport={'width':1440,'height':1000})
     page = context.new_page()
+    page.set_default_timeout(8000)
     errors, requests, records = [], [], {}
     held_chats = []
     hold_chat = False
@@ -94,6 +95,7 @@ with sync_playwright() as p:
     # Model menu, retry, disabled providers and explicit selection remain intact.
     page.get_by_role('button',name='切换模型：选择模型',exact=True).click()
     page.get_by_role('menuitem',name='重新加载').click()
+    page.get_by_role('menu').wait_for(state='hidden')
     page.get_by_role('button',name='切换模型：智谱 GLM-4.7',exact=True).click()
     menu = page.get_by_role('menu')
     assert menu.get_by_role('menuitemradio',name='Qwen 27B').get_attribute('aria-disabled') == 'true'
@@ -105,7 +107,8 @@ with sync_playwright() as p:
     page.get_by_placeholder('条文序号，如：第57条').fill('第57条')
     main.get_by_role('button',name='检索',exact=True).click()
     assert not requests
-    page.get_by_role('button',name='云端已同步 · 账号').click()
+    page.get_by_role('button',name='账号菜单').click()
+    page.get_by_role('menuitem', name='设置', exact=True).click()
     page.get_by_label('我允许第三方模型处理工作资料').check()
     page.get_by_role('button',name='关闭',exact=True).click()
 
@@ -172,6 +175,72 @@ with sync_playwright() as p:
     assert '不得宣称已获取今日最新新闻' in requests[-1]['messages'][-1]['content']
     workbench.get_by_role('button',name='关闭事务台').click()
 
+    assert not main.get_by_role('button', name='卷宗', exact=True).count()
+    assert not main.get_by_role('button', name='卷宗上传', exact=True).count()
+    account = page.get_by_role('button', name='账号菜单')
+    assert account.bounding_box()['y'] > 900
+    account.click()
+    page.screenshot(path=str(OUT/'account-menu-desktop.png'), animations='disabled')
+    page.get_by_role('menuitem', name='帮助', exact=True).click()
+    page.get_by_role('dialog', name='帮助').get_by_text('配置自己的模型', exact=True).wait_for()
+    page.get_by_role('button', name='关闭', exact=True).click()
+    account.click()
+    page.get_by_role('menuitem', name='设置', exact=True).click()
+    page.get_by_role('button', name='界面外观', exact=True).click()
+    page.get_by_role('dialog', name='设置').get_by_text('配色方案', exact=True).wait_for()
+    page.get_by_role('button', name='关闭', exact=True).click()
+
+    connections = []
+    def test_connection(route):
+        connections.append(route.request.post_data_json)
+        route.fulfill(json={'ok': True})
+    page.route('**/api/agent/custom-model/test', test_connection)
+
+    def open_custom(label):
+        picker = page.get_by_role('button', name='切换模型：'+label, exact=True)
+        picker.click()
+        page.get_by_role('menuitem', name='自定义模型', exact=True).click()
+        return page.get_by_role('dialog', name='自定义模型')
+
+    custom = open_custom('硅基流动 Qwen3-8B')
+    custom.get_by_label('厂商预设').select_option('SiliconFlow')
+    assert custom.get_by_label('Base URL').input_value() == 'https://api.siliconflow.cn/v1'
+    custom.get_by_label('厂商预设').select_option('')
+    custom.get_by_label('厂商名称').fill('测试厂商')
+    custom.get_by_label('Base URL').fill('https://api.example.test/v1/chat/completions')
+    custom.get_by_label('API Key', exact=True).fill('synthetic-user-key')
+    custom.get_by_label('模型 ID').fill('test-model')
+    custom.get_by_label('显示名称').fill('测试模型')
+    custom.get_by_label('支持图片输入').check()
+    page.screenshot(path=str(OUT/'custom-model-desktop.png'), animations='disabled')
+    custom.get_by_role('button', name='连通测试').click()
+    custom.get_by_role('status').filter(has_text='连通测试通过').wait_for()
+    assert connections == [dict(baseUrl='https://api.example.test/v1', model='test-model',
+                                apiKey='synthetic-user-key', vision=True, tools=False)]
+    custom.get_by_role('button', name='保存并选中').click()
+    page.keyboard.press('Escape')
+    custom.wait_for(state='hidden')
+    page.reload(wait_until='networkidle')
+    page.get_by_role('button', name='切换模型：测试模型', exact=True).wait_for()
+    main.locator('textarea').fill('使用自定义模型生成测试回答')
+    main.get_by_role('button', name='发送', exact=True).click()
+    page.get_by_text('Mocked answer 6', exact=True).wait_for()
+    assert requests[-1]['model'].startswith('custom-')
+    assert requests[-1]['customModel'] == connections[0]
+    assert 'synthetic-user-key' not in json.dumps(list(records.values()))
+    assert 'synthetic-user-key' not in page.evaluate('JSON.stringify(localStorage)')
+    custom = open_custom('测试模型')
+    custom.get_by_role('button', name='编辑 测试模型').click()
+    custom.get_by_label('Base URL').fill('https://other.example.test/v1')
+    custom.get_by_role('button', name='保存并选中').click()
+    custom.get_by_role('alert').filter(has_text='重新填写 Key').wait_for()
+    custom.get_by_role('button', name='返回模型列表').click()
+    page.once('dialog', lambda dialog: dialog.accept())
+    custom.get_by_role('button', name='删除 测试模型').click()
+    custom.get_by_role('button', name='添加模型').wait_for()
+    page.keyboard.press('Escape')
+    custom.wait_for(state='hidden')
+
     # Mobile layout: each restored control remains in view with no horizontal overflow.
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -183,6 +252,16 @@ with sync_playwright() as p:
     main.get_by_role('button',name='取消',exact=True).click()
     main.get_by_role('button',name='合同起草（审核）',exact=True).click()
     page.screenshot(path=str(OUT/'assistant-contract-mobile.png'),full_page=True)
+    page.get_by_role('button', name='关闭合同面板').click()
+    page.get_by_role('button', name='展开侧边栏').click()
+    account.click()
+    page.get_by_role('menuitem', name='设置', exact=True).click()
+    settings = page.get_by_role('dialog', name='设置')
+    bounds = settings.bounding_box()
+    assert bounds and bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= 390
+    settings.get_by_role('button', name='界面外观', exact=True).click()
+    settings.get_by_text('配色方案', exact=True).wait_for()
+    page.screenshot(path=str(OUT/'account-settings-mobile.png'), animations='disabled')
     assert not errors, errors
     browser.close()
-    print('PASS: restored law/case filters, contract draft/review, Workbench news, privacy, cloud persistence, model menu and desktop/mobile; all services mocked')
+    print('PASS: account menu and mobile settings, custom model configuration and sending, privacy, cloud persistence, research, contracts and news; all services mocked')

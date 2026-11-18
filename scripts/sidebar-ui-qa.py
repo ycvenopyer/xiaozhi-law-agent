@@ -60,7 +60,7 @@ def configure(page, owner):
 
 def synced(page):
     page.wait_for_load_state('networkidle')
-    expect(page.get_by_role('button',name='云端已同步 · 账号',exact=True)).to_be_visible()
+    expect(page.get_by_role('button',name='账号菜单',exact=True)).to_be_visible()
 
 def conversation(owner,title):
     return next(row['payload'] for row in records[owner].values() if row['kind']=='sessions' and row['payload']['title']==title)
