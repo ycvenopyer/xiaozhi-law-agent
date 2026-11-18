@@ -72,6 +72,7 @@ globalThis.fetch = async (url, init) => {
     assert.equal(init?.redirect, 'error')
     assert.equal(headers.get('authorization'), 'Bearer synthetic-tavily-key')
     const body = JSON.parse(String(init?.body))
+    if (body.query === 'public fixture') return json({ results: [{ title: '示例', url: 'https://example.test/patent', content: '检索结果' }] })
     const date = body.query.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
     assert.ok(date)
     assert.deepEqual(body, {
@@ -91,6 +92,25 @@ globalThis.fetch = async (url, init) => {
   if (address.endsWith('/chat/completions')) {
     const body = JSON.parse(String(init?.body))
     modelCalls.push(address)
+    assert.ok(!JSON.stringify(body).includes('synthetic-tavily-key'))
+    const last = body.messages.at(-1)
+    const frame = (choice: unknown) => new Response('data: ' + JSON.stringify({ choices: [choice] }) + '\n\ndata: [DONE]\n\n')
+    if (last.content === 'prefill sample') return frame({delta:{content: JSON.stringify({task:'保密协议（NDA）',values:{'当事人及角色':'甲方','未定义字段':'忽略'}})}})
+    if (last.content === 'search fixture') {
+      assert.ok(body.tools.some((tool: { function: { name: string } }) => tool.function.name === 'web_search'))
+      return frame({ delta: { tool_calls: [{ index: 0, id: 'search1', function: { name: 'web_search', arguments: '{"query":"public fixture"}' } }] } })
+    }
+    if (last.role === 'tool') {
+      assert.match(last.content, /example.test\/patent/)
+      return frame({ delta: { content: 'found' }, finish_reason: 'stop' })
+    }
+    if (last.content === 'length fixture') return frame({ delta: { content: '第一段' }, finish_reason: 'length' })
+    if (blockModel && last.content === 'deadline fixture') {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"前段"}}]}\n\n'))
+        init?.signal?.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true })
+      } }))
+    }
     assert.ok((body.tools || []).every((tool: { function: { name: string } }) => ['calculator', 'get_datetime'].includes(tool.function.name)))
     if (blockModel) return new Promise((_resolve, reject) => {
       const abort = () => reject(new Error('aborted'))
@@ -160,6 +180,13 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
     await t.test('file parser accepts small files and rejects oversize payloads', async () => {
       const small = await request(app).post('/api/agent/files').set(auth).attach('file', Buffer.from('sample dossier'), 'case.txt').expect(200)
       assert.equal(small.body.text, 'sample dossier')
+      const archive = new (await import('jszip')).default()
+      archive.file('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>测试协议</w:t></w:r></w:p></w:body></w:document>')
+      const docx = await archive.generateAsync({type:'nodebuffer'})
+      const word = await request(app).post('/api/agent/files').set(auth).attach('file', docx, 'sample.docx').expect(200)
+      assert.match(word.body.text, /测试协议/)
+      const gbk = await request(app).post('/api/agent/files').set(auth).attach('file', Buffer.from([0xd6,0xd0,0xce,0xc4]), 'sample.md').expect(200)
+      assert.equal(gbk.body.text, '中文')
       await request(app).post('/api/agent/files').set(auth).attach('file', Buffer.alloc(4 * 1024 * 1024 + 1), 'large.txt').expect(413)
       await request(app).post('/api/agent/chat').set(auth).send({ ...input, messages: [{ role: 'user', content: 'x'.repeat(5 * 1024 * 1024) }] }).expect(413)
       assert.equal(modelCalls.length, 0)
@@ -264,7 +291,45 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
         assert.equal(savedStatus, 'failed')
       } finally { globalThis.setTimeout = originalTimeout; blockModel = false }
     })
-    await t.test('removed search tools cannot execute or make outbound calls', async () => {
+    await t.test('configured chat searches with Tavily and retains the source', async () => {
+      record = makeRecord()
+      const res = await request(app).post('/api/agent/chat').set(auth).send({ ...input,
+        messages: [{ role: 'user', content: 'search fixture' }], tavilyKey: 'synthetic-tavily-key' }).expect(200)
+      assert.match(res.text, /tool_end/)
+      assert.doesNotMatch(res.text, /synthetic-tavily-key/)
+      assert.equal(record.payload.messages.at(-1)?.content, 'found')
+    })
+    await t.test('length cutoff continues in the same saved reply', async () => {
+      record = makeRecord()
+      await request(app).post('/api/agent/chat').set(auth).send({ ...input, messages: [{ role: 'user', content: 'length fixture' }] }).expect(200)
+      assert.equal(record.payload.messages.at(-1)?.content, '第一段hello')
+      assert.equal(savedStatus, 'complete')
+    })
+    await t.test('a timed-out partial answer resumes after persistence', async () => {
+      record = makeRecord()
+      const body = { ...input, messages: [{ role: 'user', content: 'deadline fixture' }], allowResume: true }
+      const originalTimeout = globalThis.setTimeout
+      blockModel = true
+      globalThis.setTimeout = ((fn, ms, ...args) => originalTimeout(fn, ms === 100_000 ? 30 : ms, ...args)) as typeof setTimeout
+      try {
+        const res = await request(app).post('/api/agent/chat').set(auth).send(body).expect(200)
+        assert.match(res.text, /"type":"resume"/)
+        assert.equal(savedStatus, 'interrupted')
+      } finally { globalThis.setTimeout = originalTimeout; blockModel = false }
+      await request(app).post('/api/agent/chat').set(auth).send({ ...body, resumeRevision: record.revision }).expect(200)
+      assert.equal(savedStatus, 'complete')
+      assert.equal(record.payload.messages.at(-1)?.content, '前段hello')
+    })
+    await t.test('file prefill checks consent, vision and allowed fields', async () => {
+      const body = { model: 'zhipu-glm', mode: 'draft', text: 'prefill sample', images: [] }
+      consent = false
+      await request(app).post('/api/agent/prefill').set(auth).send(body).expect(403)
+      consent = true
+      await request(app).post('/api/agent/prefill').set(auth).send({ ...body, images:['data:image/jpeg;base64,AA=='] }).expect(400)
+      const result = await request(app).post('/api/agent/prefill').set(auth).send(body).expect(200)
+      assert.deepEqual(result.body, { task:'保密协议（NDA）', values:{'当事人及角色':'甲方'} })
+    })
+    await t.test('missing search key keeps chat search unavailable', async () => {
       assert.ok(!TOOLS.some(tool => tool.function.name === 'web_search'))
       assert.ok(!availableTools().some(tool => tool.function.name === 'web_search'))
       assert.match(await executeTool('web_search', '{"query":"secret invention"}'), /未知工具/)

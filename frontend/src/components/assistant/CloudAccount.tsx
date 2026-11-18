@@ -175,7 +175,8 @@ interface AccountControlsProps {
 export function AccountControls({ disabled = false, appearance, onAppearanceChange, searchConfigured, onSearchKeyChange }: AccountControlsProps) {
   const account = useContext(Context);
   const sync = useSyncExternalStore(subscribeSync, getSyncStatus);
-  const [dialog, setDialog] = useState<'settings' | 'help' | null>(null);
+  const [guiding, setGuiding] = useState(() => !loadCollection<{ id: string }>('settings').some(item => item.id === 'welcome-v1'));
+  const [dialog, setDialog] = useState<'settings' | 'help' | null>(guiding ? 'settings' : null);
   const [section, setSection] = useState<'privacy' | 'account' | 'appearance' | 'search'>('privacy');
   const [external, setExternal] = useState(getPrivacy);
   const [busy, setBusy] = useState(false);
@@ -196,6 +197,14 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
   }
   const status = sync.error ? '保存失败' : sync.pending ? '保存中…' : '云端已同步';
   const displayName = account.user.email || account.user.id;
+  function closeSettings() {
+    if (!guiding) { setDialog(null); return; }
+    void act(async () => {
+      await saveCollection('settings', [{ id: 'welcome-v1', completed: true }], false);
+      setGuiding(false);
+      setDialog(null);
+    });
+  }
   function openSettings() {
     setFiles(loadCollection<AttachedFile>('files'));
     setExternal(getPrivacy());
@@ -222,14 +231,14 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
       </DropdownMenuContent>
     </DropdownMenu>
     {!dialog && (error || sync.error) && <p role="alert" className="px-2 pb-1 text-xs text-destructive">{error || '请在设置中查看保存状态'}</p>}
-    <Dialog open={dialog !== null} onOpenChange={open => { if (!open && !busy) setDialog(null); }}>
+    <Dialog open={dialog !== null} onOpenChange={open => { if (!open && !busy) closeSettings(); }}>
       {dialog && <DialogContent showCloseButton={false} onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }} className="max-h-[90dvh] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-2xl">
         <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0 space-y-1.5">
-            <DialogTitle>{dialog === 'settings' ? '设置' : '帮助'}</DialogTitle>
-            <DialogDescription className="truncate">{dialog === 'settings' ? displayName : '小知工作空间使用指南'}</DialogDescription>
+            <DialogTitle>{guiding ? '首次使用设置' : dialog === 'settings' ? '设置' : '帮助'}</DialogTitle>
+            <DialogDescription>{guiding ? (section === 'privacy' ? '第 1 步，共 2 步 · 选择是否允许模型处理你的资料。' : '第 2 步，共 2 步 · 可选配 Tavily，以使用联网搜索。') : dialog === 'settings' ? displayName : '小知工作空间使用指南'}</DialogDescription>
           </div>
-          <button aria-label="关闭" disabled={busy} onClick={() => setDialog(null)} className="rounded-md px-2 text-lg leading-6 text-muted-foreground hover:bg-muted">×</button>
+          <button aria-label="关闭" disabled={busy} onClick={closeSettings} className="rounded-md px-2 text-lg leading-6 text-muted-foreground hover:bg-muted">×</button>
         </header>
         {dialog === 'help' ? <div className="space-y-4 overflow-y-auto p-5 text-sm leading-6">
           <div><h3 className="font-medium">开始对话</h3><p className="text-muted-foreground">在设置里授权第三方模型处理，然后从输入框选择模型。检索法条和案例时，可通过知识库或普通附件提供参考材料。</p></div>
@@ -237,7 +246,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
           <div><h3 className="font-medium">检索今日知产新闻</h3><p className="text-muted-foreground">在「设置 → 联网搜索」保存 Tavily API Key，然后到事务台检索当天的知产动态。</p></div>
           <div><h3 className="font-medium">下载已保存的附件</h3><p className="text-muted-foreground">在「设置 → 账号与隐私」中下载当前账号已保存的文件原件。</p></div>
         </div> : <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[9rem_minmax(0,1fr)] sm:grid-rows-1">
-          <nav aria-label="设置分类" className="grid grid-cols-2 gap-1 border-b border-border bg-muted/30 p-2 sm:flex sm:flex-col sm:border-b-0 sm:border-r">
+          <nav aria-label="设置分类" hidden={guiding} className={guiding ? 'hidden' : "grid grid-cols-2 gap-1 border-b border-border bg-muted/30 p-2 sm:flex sm:flex-col sm:border-b-0 sm:border-r"}>
             {([
               ['privacy', '账号与隐私', ShieldCheck],
               ['account', '登录账号', LockKeyhole],
@@ -245,7 +254,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
               ['search', '联网搜索', Search],
             ] as const).map(([id, label, Icon]) => <button type="button" key={id} aria-pressed={section === id} disabled={busy} onClick={() => setSection(id)} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${section === id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="size-4" />{label}</button>)}
           </nav>
-          <div className="min-h-0 overflow-y-auto p-4 sm:p-5">
+          <div className={guiding ? "col-span-full row-span-full overflow-y-auto p-5" : "min-h-0 overflow-y-auto p-4 sm:p-5"}>
             {section === 'account' && <LoginSettings email={account.user.email} busy={busy} setBusy={setBusy} />}
             {section === 'appearance' && <AppearancePanel value={appearance} onChange={onAppearanceChange} />}
             {section === 'search' && <WebSearchSettings accountId={account.user.id} configured={searchConfigured} onChange={onSearchKeyChange} />}
@@ -264,10 +273,17 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
                   });
                 }} />我允许第三方模型处理工作资料</label>
               </div>
-              <div className="mt-4 rounded-xl border border-border p-4"><h3 className="text-sm font-medium">已保存的文件原件</h3><p className="my-2 text-xs text-muted-foreground">文件通过私有存储权限验证后下载。</p><ul className="max-h-40 space-y-2 overflow-y-auto">{files.map(file => <li key={file.id} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate">{file.name}</span><button aria-label={`下载 ${file.name}`} disabled={busy} onClick={() => void act(() => downloadOriginal(file))}><Download className="h-4 w-4" /></button></li>)}</ul></div>
+              {!guiding && <div className="mt-4 rounded-xl border border-border p-4"><h3 className="text-sm font-medium">已保存的文件原件</h3><p className="my-2 text-xs text-muted-foreground">文件通过私有存储权限验证后下载。</p><ul className="max-h-40 space-y-2 overflow-y-auto">{files.map(file => <li key={file.id} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate">{file.name}</span><button aria-label={`下载 ${file.name}`} disabled={busy} onClick={() => void act(() => downloadOriginal(file))}><Download className="h-4 w-4" /></button></li>)}</ul></div>}
               {(error || sync.error) && <p role="alert" className="mt-3 text-sm text-destructive">{error || sync.error}</p>}
               {sync.error && <button className={`${button} mt-3`} onClick={exportRecovery}>导出未保存资料备份</button>}
             </>}
+            {guiding && <div className="mt-4 flex justify-end gap-2">
+              {section === 'search' && <button className={button} disabled={busy} onClick={() => setSection('privacy')}>上一步</button>}
+              <button className={button} disabled={busy} onClick={() => section === 'privacy' ? setSection('search') : closeSettings()}>
+                {section === 'privacy' ? '下一步' : '完成引导'}
+              </button>
+            </div>}
+            {guiding && section === 'search' && error && <p role="alert">{error}</p>}
           </div>
         </div>}
       </DialogContent>}

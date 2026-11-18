@@ -85,6 +85,7 @@ export type AgentEvent =
 
 /** Friendly metadata for each built-in tool. */
 export const TOOL_META: Record<string, { label: string; icon: string; tone: string }> = {
+  web_search: { label: '联网搜索', icon: 'Search', tone: 'text-primary' },
   calculator: { label: '计算', icon: 'Calculator', tone: 'text-emerald-600 dark:text-emerald-400' },
   get_datetime: { label: '时间', icon: 'Clock', tone: 'text-sky-600 dark:text-sky-400' },
 };

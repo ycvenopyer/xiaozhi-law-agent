@@ -41,6 +41,7 @@ with sync_playwright() as p:
     page.on('pageerror', lambda error: errors.append(str(error)))
     conversation = dict(id='saved-session', title='云端对话测试', createdAt=1, updatedAt=1, messages=[])
     records = {('sessions', conversation['id']): dict(kind='sessions', id=conversation['id'], payload=conversation, revision=1)}
+    records[('settings','welcome-v1')] = dict(kind='settings', id='welcome-v1', revision=1, payload=dict(id='welcome-v1', completed=True))
     model_requests = []
     profile = {'username': '', 'password': None}
     username_attempts = []

@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Calculator, Clock, BookOpen, Wrench, ChevronDown, Loader2 } from 'lucide-react';
+import { Search, Calculator, Clock, BookOpen, Wrench, ChevronDown, Loader2 } from 'lucide-react';
 import type { ToolCallView } from '@/types/agent';
 import { TOOL_META } from '@/types/agent';
 
 const ICONS: Record<string, typeof Calculator> = {
   Calculator,
+  Search,
   Clock,
   BookOpen,
   Wrench,

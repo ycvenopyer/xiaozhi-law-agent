@@ -44,6 +44,7 @@ export async function* streamChat(
     model?: string;
     signal?: AbortSignal;
     knowledge?: string;
+    tavilyKey?: string;
     workflow?: WorkbenchMode;
     customModel?: CustomModelRequest;
     conversationId?: string;
@@ -74,14 +75,28 @@ export async function* streamChat(
       return images.length ? { role: m.role, content, images } : { role: m.role, content };
     }));
 
-  const body = serializeRequest({ messages: payload, model: opts?.model, workflow: opts?.workflow, knowledge: opts?.knowledge,
-    customModel: opts?.customModel, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId });
+  const request = { messages: payload, model: opts?.model, workflow: opts?.workflow, knowledge: opts?.knowledge,
+    tavilyKey: opts?.tavilyKey, customModel: opts?.customModel, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId };
+  let resumeRevision: number | undefined;
+  do {
+    const body = serializeRequest({ ...request, allowResume: !opts?.workflow, resumeRevision });
+    resumeRevision = undefined;
+    for await (const event of readChatSegment(body, opts?.signal)) {
+      if (event.type === 'resume') resumeRevision = event.revision;
+      else if (!(resumeRevision && event.type === 'done')) yield event;
+    }
+  } while (resumeRevision && !opts?.signal?.aborted);
+}
+
+type SegmentEvent = AgentEvent | { type: 'resume'; revision: number };
+
+async function* readChatSegment(body: string, signal?: AbortSignal): AsyncGenerator<SegmentEvent> {
 
   const res = await fetch('/api/agent/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...await authHeaders() },
     body,
-    signal: opts?.signal,
+    signal,
   });
 
   if (!res.ok || !res.body) {
@@ -112,7 +127,7 @@ export async function* streamChat(
       const data = line.slice(5).trim();
       if (!data) continue;
       try {
-        const event = JSON.parse(data) as AgentEvent | { type: 'saved'; record: CloudRecord };
+        const event = JSON.parse(data) as SegmentEvent | { type: 'saved'; record: CloudRecord };
         if (event.type === 'saved') acceptRecord(event.record);
         else yield event;
       } catch {

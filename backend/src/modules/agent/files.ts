@@ -1,5 +1,6 @@
 import multer from 'multer';
 import pdf from 'pdf-parse';
+import WordExtractor from 'word-extractor';
 import mammoth from 'mammoth';
 
 /** In-memory upload (no disk persistence needed — file text is sent to the LLM). */
@@ -69,8 +70,20 @@ export async function parseFile(file: Express.Multer.File): Promise<ParsedFile> 
     } catch {
       text = '（无法从该 Word 文档提取文本，可能是旧版 .doc 格式或文件已损坏）';
     }
+  } else if (ext === 'doc' || file.mimetype === 'application/msword') {
+    try {
+      text = (await new WordExtractor().extract(file.buffer)).getBody();
+    } catch {
+      text = '（无法从该 Word 文档提取文本，请另存为 .docx 后重试）';
+    }
   } else if (TEXT_EXT.has(ext) || file.mimetype.startsWith('text/')) {
-    text = file.buffer.toString('utf-8');
+    const bom = file.buffer.subarray(0, 2).toString('hex');
+    const encoding = bom === 'fffe' ? 'utf-16le' : bom === 'feff' ? 'utf-16be' : 'utf-8';
+    try {
+      text = new TextDecoder(encoding, { fatal: true }).decode(file.buffer);
+    } catch {
+      text = new TextDecoder('gb18030').decode(file.buffer);
+    }
   } else {
     // Best-effort: try to decode as UTF-8 text.
     text = file.buffer.toString('utf-8');

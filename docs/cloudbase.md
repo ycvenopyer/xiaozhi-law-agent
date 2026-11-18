@@ -127,7 +127,7 @@ EdgeOne [官方构建指南](https://pages.edgeone.ai/document/build-guide)规�
 - 后端在对话生成前检查账号外发授权。输入框的法条、案例、合同入口及事务台的生成操作复用同一对话接口。
 - 图片不支持时要求用户选择视觉模型，不自动切换。
 - 模型错误不转发给其他模型或供应商。
-- 法条、案例和合同使用提供的资料，调用模型时受账号外发授权控制。事务台的今日知产新闻使用用户填写的 Tavily API Key。后端只提交固定的公开检索词，搜索可独立于模型外发授权使用。Key 按账号存于当前标签页，退出登录时清除，搜索消耗用户自己的 Tavily 额度。参见 [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)。
+- 法条、案例和合同使用提供的资料，调用模型时受账号外发授权控制。事务台的今日知产新闻使用用户填写的 Tavily API Key。新闻检索使用固定的公开检索词。普通对话经模型外发授权后，可使用同一 Key 将模型生成的搜索词发送给 Tavily。Key 按账号存于当前标签页，退出登录时清除，搜索消耗用户自己的 Tavily 额度。参见 [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)。
 - 普通附件在服务端解析文本，这一步不会调用模型。提交对话时，附件提取文本和图片才可能交给所选模型服务。
 
 要使用智谱内置模型，在 EdgeOne 后端环境配置：

@@ -46,7 +46,7 @@ export function WebSearchSettings({ accountId, configured, onChange }: Props) {
         </span>
       </div>
       <p className="mt-2 text-xs leading-6 text-muted-foreground">
-        用于事务台的今日知产新闻。Key 保存在当前标签页，退出登录时清除。
+        保存后，对话模型可将搜索词发送给 Tavily，使用你的搜索额度。今日知产新闻也使用此 Key。Key 保存在当前标签页，退出登录时清除。
       </p>
       <form onSubmit={save} className="mt-4 space-y-3">
         <label className="block text-sm">

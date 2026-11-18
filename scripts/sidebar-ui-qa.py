@@ -17,6 +17,9 @@ export default {init(){return {auth:()=>({
 """
 
 records = {owner:{('settings','privacy'):dict(kind='settings',id='privacy',revision=1,payload=dict(id='privacy',externalModels=True))} for owner in ('account-a','account-b')}
+for rows in records.values():
+    rows[('settings','welcome-v1')] = dict(kind='settings', id='welcome-v1', revision=1, payload=dict(id='welcome-v1', completed=True))
+
 errors = []
 
 def configure(page, owner):

@@ -21,38 +21,13 @@ function publicationDate(value: string) {
 export async function findIpNews(apiKey: string, signal: AbortSignal) {
   const date = dateFormatter.format(new Date());
   const query = `${date} 中国知识产权新闻：专利、商标、版权、商业秘密、政策和司法裁判`;
-  const response = await fetch('https://api.tavily.com/search', {
-    method: 'POST',
-    redirect: 'error',
-    signal,
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      query,
-      topic: 'news',
-      search_depth: 'basic',
-      max_results: 20,
-      time_range: 'day',
-      include_published_date: true,
-      include_answer: false,
-      include_raw_content: false,
-    }),
-  });
-  if (!response.ok) {
-    await response.body?.cancel();
-    if (response.status === 401 || response.status === 403) {
-      throw new AppError(403, 'Tavily 拒绝了请求，请在联网搜索设置中核对 API Key 和权限。');
-    }
-    if (response.status === 432) throw new AppError(429, 'Tavily 额度不足，请检查你的 Tavily 账户。');
-    if (response.status === 429) throw new AppError(429, 'Tavily 搜索频率受限，请稍后重试。');
-    throw new AppError(502, 'Tavily 暂时无法完成搜索，请稍后重试。');
-  }
-
-  const body = z.object({ results: z.array(z.unknown()) }).safeParse(await response.json());
-  if (!body.success) throw new AppError(502, 'Tavily 返回的新闻格式异常，请稍后重试。');
-
+  const results = await searchTavily(apiKey, {
+    query, topic: 'news', search_depth: 'basic', max_results: 20, time_range: 'day',
+    include_published_date: true, include_answer: false, include_raw_content: false,
+  }, signal);
   const seen = new Set<string>();
   const articles = [];
-  for (const item of body.data.results) {
+  for (const item of results) {
     const source = sourceSchema.safeParse(item);
     if (!source.success) continue;
     const { title, url: link, published_date, content = '' } = source.data;
@@ -65,4 +40,41 @@ export async function findIpNews(apiKey: string, signal: AbortSignal) {
     if (articles.length === 8) break;
   }
   return { date, articles };
+}
+
+async function searchTavily(apiKey: string, params: Record<string, unknown>, signal?: AbortSignal) {
+  const response = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    redirect: 'error',
+    signal,
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    if (response.status === 401 || response.status === 403) {
+      throw new AppError(403, 'Tavily 拒绝了请求，请在联网搜索设置中核对 API Key 和权限。');
+    }
+    if (response.status === 432) throw new AppError(429, 'Tavily 额度不足，请检查你的 Tavily 账户。');
+    if (response.status === 429) throw new AppError(429, 'Tavily 搜索频率受限，请稍后重试。');
+    throw new AppError(502, 'Tavily 暂时无法完成搜索，请稍后重试。');
+  }
+
+  const body = z.object({ results: z.array(z.unknown()) }).safeParse(await response.json());
+  if (!body.success) throw new AppError(502, 'Tavily 返回的结果格式异常，请稍后重试。');
+
+  return body.data.results;
+}
+
+export async function searchWeb(apiKey: string, query: string, signal?: AbortSignal) {
+  const hits = await searchTavily(apiKey, { query, max_results: 5, include_raw_content: false }, signal);
+  const articles = [];
+  for (const hit of hits) {
+    const parsed = sourceSchema.omit({ published_date: true }).safeParse(hit);
+    if (parsed.success) {
+      const { title, url, content } = parsed.data;
+      articles.push({ title: title.slice(0, 160), url, summary: content?.slice(0, 320) });
+    }
+  }
+  return JSON.stringify(articles);
 }

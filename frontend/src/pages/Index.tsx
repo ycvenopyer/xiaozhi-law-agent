@@ -1,9 +1,12 @@
+import { fileToImageDataUrl } from '@/lib/image-file';
+import { WorkflowUpload } from '@/components/assistant/WorkflowUpload';
+import type { WorkflowPrefill } from '../../../shared/workflow-fields.mjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BookOpen, ClipboardList, PanelLeftOpen, ChevronRight } from 'lucide-react';
 import { Sidebar } from '@/components/assistant/Sidebar';
 import { ProjectOverview } from '@/components/assistant/ProjectOverview';
 import { MessageList } from '@/components/assistant/MessageList';
-import { ChatInput, type RetrieveMode } from '@/components/assistant/ChatInput';
+import { ChatInput } from '@/components/assistant/ChatInput';
 import { EmptyState } from '@/components/assistant/EmptyState';
 import { KnowledgePanel } from '@/components/assistant/KnowledgePanel';
 import { type WorkbenchMode, fetchIpNews, streamChat, uploadFile } from '@/lib/agent-client';
@@ -41,43 +44,6 @@ function firstLine(text: string): string {
 function emptySession(projectId?: string): Session {
   const now = Date.now();
   return { id: newSessionId(), title: '新对话', messages: [], createdAt: now, updatedAt: now, projectId };
-}
-
-/**
- * Read an image file and return a (downscaled) base64 data URL suitable for a
- * vision model. Large photos are resized to a max edge of 1024px and re-encoded
- * as JPEG to keep the request within model context limits.
- */
-function fileToImageDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('读取图片失败'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('解析图片失败'));
-      img.onload = () => {
-        const maxEdge = 1024;
-        let { width, height } = img;
-        if (width > maxEdge || height > maxEdge) {
-          const scale = Math.min(maxEdge / width, maxEdge / height);
-          width = Math.round(width * scale);
-          height = Math.round(height * scale);
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(reader.result as string);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
-      };
-      img.src = reader.result as string;
-    };
-    reader.readAsDataURL(file);
-  });
 }
 
 export default function Index() {
@@ -125,6 +91,9 @@ export default function Index() {
   });
   const [kbOpen, setKbOpen] = useState(false);
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [imports, setImports] = useState<Partial<Record<WorkbenchMode, WorkflowPrefill & { id: string; source: string }>>>({});
+  const [workflow, setWorkflow] = useState<WorkbenchMode | null>(null);
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const [contractOpen, setContractOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -406,6 +375,7 @@ export default function Index() {
           {
           model: selectedModel,
           customModel,
+          tavilyKey: getTavilyKey(accountId) || undefined,
           signal: ac.signal,
           knowledge: kbEnabled ? kbToText(kb, text) : '',
           conversationId: current.id,
@@ -489,7 +459,7 @@ export default function Index() {
         }
       }
     },
-    [streaming, current, selectedModel, modelRequest, updateCurrent, kb, kbEnabled, sessions]
+    [accountId, streaming, current, selectedModel, modelRequest, updateCurrent, kb, kbEnabled, sessions]
   );
 
   const handleSend = useCallback(() => {
@@ -500,20 +470,6 @@ export default function Index() {
       setFiles([]);
     });
   }, [input, files, streaming, submit]);
-
-  const handleRetrieve = useCallback((mode: RetrieveMode, payload: Parameters<React.ComponentProps<typeof ChatInput>['onRetrieve']>[1]) => {
-    const fields = mode === 'law'
-      ? [['关键词', payload.keyword], ['法典名称', payload.code], ['条文序号', payload.article]]
-      : [['关键词', payload.keyword], ['案由', payload.cause], ['案件类型', payload.caseType], ['审理程序', payload.procedure], ['法院层级', payload.courtLevel], ['年份', payload.year]];
-    const conditions = fields.filter(([, value]) => value).map(([name, value]) => `${name}：${value}`).join('\n');
-    const task = mode === 'law'
-      ? '请根据下列条件，从本次提供的知识库和附件中检索相关法条，列出法律名称、条文序号、材料中的原文及适用要点。'
-      : '请根据下列条件，从本次提供的知识库和附件中检索类似案例，列出材料中的案号、法院、关键事实、争议焦点、裁判理由，以及与本案的异同。';
-    const detail = payload.depth === 'deep'
-      ? '请逐项分析，说明匹配与不匹配的条件、证据来源和需要补充核实的信息。'
-      : '请优先列出最相关的结果，简要说明理由。';
-    void submit(`${task}\n${conditions}\n${detail}\n当前不提供网页搜索。仅引用所提供材料中实际存在的条文、案号和链接；没有匹配资料时明确说明，并给出后续人工核验的方向。`, files, undefined, () => setFiles([]));
-  }, [files, submit]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -673,7 +629,8 @@ export default function Index() {
           onRemoveFile={removeFile}
           streaming={streaming}
           disabled={streaming || !current}
-          onRetrieve={handleRetrieve}
+          onWorkflow={setWorkflow}
+          onWorkflowUpload={() => setUploadOpen(true)}
           onOpenContract={() => setContractOpen(true)}
           models={modelOptions}
           selectedModel={selectedModel}
@@ -694,9 +651,16 @@ export default function Index() {
         onToggleEnabled={setKbEnabled}
       />
 
-      <Workbench entries={kb}
-        open={workbenchOpen}
-        onClose={() => setWorkbenchOpen(false)}
+      {uploadOpen && <WorkflowUpload model={selectedModel} modelRequest={modelRequest}
+        onClose={() => setUploadOpen(false)} onImport={(mode, result, source) => {
+          setImports(previous => ({ ...previous, [mode]: { ...result, id: crypto.randomUUID(), source } }));
+          setUploadOpen(false);
+          setWorkflow(mode);
+        }} />}
+      <Workbench entries={kb} imports={imports}
+        workflow={workflow}
+        open={workbenchOpen || !!workflow}
+        onClose={() => { setWorkbenchOpen(false); setWorkflow(null); }}
         onGenerate={generateText}
         searchConfigured={searchConfigured}
         onSearchNews={async signal => {

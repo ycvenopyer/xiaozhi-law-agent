@@ -8,17 +8,20 @@ import {
   Loader2,
   Newspaper,
   ArrowUpRight,
-  Search, ScanSearch, Fingerprint, ShieldCheck, FilePenLine,
+  Search,
 } from 'lucide-react';
 import { IpWorkflow, workflowNames } from './IpWorkflow';
 import type { KBEntry } from '@/lib/knowledge';
 import type { IpNews, WorkbenchMode } from '@/lib/agent-client';
 
-const scenarios = { compare: ScanSearch, infringement: Fingerprint, compliance: ShieldCheck, draft: FilePenLine };
-type Tab = 'doc' | 'news' | WorkbenchMode;
+import type { WorkflowPrefill } from '../../../../shared/workflow-fields.mjs';
+
+type Tab = 'doc' | 'news';
 
 interface Props {
   entries: KBEntry[];
+  imports: Partial<Record<WorkbenchMode, WorkflowPrefill & { id: string; source: string }>>;
+  workflow: WorkbenchMode | null;
   open: boolean;
   onClose: () => void;
   /** 调用助理生成文本，实时回传 token。 */
@@ -41,7 +44,7 @@ const EMAIL_SUBTYPES = [
   { id: 'generic', name: '通用商务邮件' },
 ];
 
-export function Workbench({ entries, open, onClose, onGenerate, onSearchNews, searchConfigured }: Props) {
+export function Workbench({ entries, imports, workflow, open, onClose, onGenerate, onSearchNews, searchConfigured }: Props) {
   const [tab, setTab] = useState<Tab>('news');
 
   return (
@@ -51,16 +54,16 @@ export function Workbench({ entries, open, onClose, onGenerate, onSearchNews, se
         onClick={onClose}
       />
       <aside
-        aria-label="事务台"
+        aria-label={workflow ? workflowNames[workflow] : '事务台'}
         className={`absolute right-0 top-0 flex h-full w-full max-w-xl flex-col bg-card shadow-xl transition-transform ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <ClipboardList className="h-4 w-4 text-primary" />
-          <span className="text-sm font-semibold">事务台</span>
+          <span className="text-sm font-semibold">{workflow ? workflowNames[workflow] : '事务台'}</span>
           <button
-            aria-label="关闭事务台"
+            aria-label={workflow ? '关闭' + workflowNames[workflow] : '关闭事务台'}
             onClick={onClose}
             className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
@@ -68,11 +71,7 @@ export function Workbench({ entries, open, onClose, onGenerate, onSearchNews, se
           </button>
         </div>
 
-        <div className="grid shrink-0 grid-cols-3 border-b border-border text-[0.8rem]">
-          {(Object.keys(scenarios) as WorkbenchMode[]).map(id => {
-            const Icon = scenarios[id];
-            return <TabButton key={id} active={tab===id} onClick={()=>setTab(id)} icon={<Icon className="size-4" />}>{workflowNames[id]}</TabButton>;
-          })}
+        <div className={workflow ? 'hidden' : 'grid shrink-0 grid-cols-2 border-b border-border text-[0.8rem]'}>
           <TabButton active={tab === 'news'} onClick={() => setTab('news')} icon={<Newspaper className="h-3.5 w-3.5" />}>
             知产新闻
           </TabButton>
@@ -82,9 +81,11 @@ export function Workbench({ entries, open, onClose, onGenerate, onSearchNews, se
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
-          {(Object.keys(scenarios) as WorkbenchMode[]).map(id => <div key={id} hidden={tab!==id}><IpWorkflow mode={id} entries={entries} onGenerate={onGenerate}/></div>)}
-          <div hidden={tab !== 'news'}><NewsTab onSearchNews={onSearchNews} searchConfigured={searchConfigured} /></div>
-          <div hidden={tab !== 'doc'}><DocTab onGenerate={onGenerate} /></div>
+          {(Object.keys(workflowNames) as WorkbenchMode[]).map(id => <div key={id} hidden={workflow!==id}>
+            {imports[id] && <p className="mb-4 break-words rounded-lg bg-muted p-3 text-xs">已从 {imports[id]?.source} 填入，请核对并补充空白项。</p>}
+            <IpWorkflow key={imports[id]?.id} prefill={imports[id]} mode={id} entries={entries} onGenerate={onGenerate}/></div>)}
+          <div hidden={!!workflow || tab !== 'news'}><NewsTab onSearchNews={onSearchNews} searchConfigured={searchConfigured} /></div>
+          <div hidden={!!workflow || tab !== 'doc'}><DocTab onGenerate={onGenerate} /></div>
         </div>
       </aside>
     </div>

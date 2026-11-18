@@ -23,13 +23,13 @@ const button =
 const disclaimer = '仅供公开专利检索初筛。初筛等级，非侵权结论。法律状态与保护范围需人工复核。'
 type Review = { choice?: string; note?: string }
 
-export function PatentScreen() {
+export function PatentScreen({ values }: { values?: Record<string, string> }) {
   const accountId = useAccountId()
   const [stage, setStage] = useState(0)
   const [allowed, setAllowed] = useState(false)
-  const [plan, setPlan] = useState('')
-  const [markets, setMarkets] = useState<string[]>([])
-  const [exclusions, setExclusions] = useState('')
+  const [plan, setPlan] = useState(values?.['技术方案'] || '')
+  const [markets, setMarkets] = useState<string[]>(values?.['目标市场']?.split('|').filter(m => ['中国','美国','欧洲','日本','韩国','其他'].includes(m)) || [])
+  const [exclusions, setExclusions] = useState(values?.['排除词'] || '')
   const [features, setFeatures] = useState<Feature[]>([])
   const [csv, setCsv] = useState<CsvTable | null>(null)
   const [mapping, setMapping] = useState<Mapping>(() => guessMapping([]))

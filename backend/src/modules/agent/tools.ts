@@ -1,8 +1,8 @@
+import { searchWeb } from './ip-news';
 import type { ToolDefinition } from './types';
 
 /**
  * Tool catalogue exposed to the LLM. The model decides when to call these.
- * No public-web search adapter is installed.
  */
 export const TOOLS: ToolDefinition[] = [
   {
@@ -43,8 +43,17 @@ export const TOOLS: ToolDefinition[] = [
   },
 ];
 
-export function availableTools(): ToolDefinition[] {
-  return TOOLS;
+const webSearch: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'web_search',
+    description: '搜索公开网页。请用公开关键词概括问题，避免发送案件中的个人信息或未公开材料。',
+    parameters: { type: 'object', properties: { query: { type: 'string', description: '搜索关键词' } }, required: ['query'] },
+  },
+};
+
+export function availableTools(searchEnabled = false): ToolDefinition[] {
+  return searchEnabled ? [...TOOLS, webSearch] : TOOLS;
 }
 
 /**
@@ -154,7 +163,7 @@ function datetimeTool(timezone?: string): string {
 /**
  * Execute a tool by name. `arguments` is a JSON-encoded string from the LLM.
  */
-export async function executeTool(name: string, argsJson: string): Promise<string> {
+export async function executeTool(name: string, argsJson: string, tavilyKey?: string, signal?: AbortSignal): Promise<string> {
   let args: Record<string, unknown> = {};
   try {
     args = argsJson ? JSON.parse(argsJson) : {};
@@ -164,6 +173,10 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
 
   try {
     switch (name) {
+      case 'web_search':
+        if (!tavilyKey) return '未知工具：web_search（未配置 Tavily Key）';
+        if (typeof args.query !== 'string' || !args.query.trim() || args.query.length > 400) return '请提供 400 字以内的搜索词。';
+        return await searchWeb(tavilyKey, args.query.trim(), signal);
       case 'calculator':
         return calcTool(String(args.expression ?? ''));
       case 'get_datetime':

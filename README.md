@@ -10,10 +10,10 @@ XiaoZhi helps intellectual property practitioners review evidence, draft documen
 | --- | --- |
 | Sidebar | Search titles and messages, and create, rename, pin, delete, or organize conversations into projects |
 | Account menu | Open Settings or Help, or sign out. Settings covers usernames and passwords, model consent, web search, appearance, and saved files |
-| Top toolbar | Open the knowledge base or Workbench for IP comparisons, patent CSV screening, infringement and compliance reviews, documents, and today's IP news |
-| Composer | Attach files, research statutes or cases, draft or review contracts, and switch between built-in and custom models |
+| Top toolbar | Open the knowledge base or Workbench for document drafting and today's IP news |
+| Composer | Attach files, compare IP materials, screen patents, review infringement and compliance, draft IP documents, draft or review contracts, and switch between built-in and custom models |
 
-Statute and case research uses the enabled knowledge base and supplied materials. For today's IP news, add your Tavily API key under Settings → Web Search, then search in the Workbench. It sends a fixed public query to Tavily and filters results by the current calendar day in Asia/Shanghai. Search uses your Tavily quota. Verify citations and drafts before relying on them.
+Statute and case research uses the enabled knowledge base and supplied materials. For today's IP news, add your Tavily API key under Settings → Web Search, then search in the Workbench. It sends a fixed public query to Tavily and filters results by the current calendar day in Asia/Shanghai. Chat models with tool support can also search the web using this key. Searches use your Tavily quota. Verify citations and drafts before relying on them.
 
 ## Local development
 

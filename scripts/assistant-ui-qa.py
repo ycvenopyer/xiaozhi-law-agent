@@ -84,6 +84,11 @@ with sync_playwright() as p:
     page.route('**/api/agent/models',list_models)
     page.route('**/api/agent/chat',chat)
     page.goto('http://127.0.0.1:5173')
+    guide = page.get_by_role('dialog', name='首次使用设置')
+    guide.get_by_role('button', name='下一步').click()
+    guide.get_by_label('Tavily API Key', exact=True).wait_for()
+    guide.get_by_role('button', name='完成引导').click()
+    guide.wait_for(state='hidden')
     try:
         page.get_by_text('私人云端空间',exact=True).wait_for(timeout=10000)
     except Exception:
@@ -95,7 +100,7 @@ with sync_playwright() as p:
     assert not page.get_by_role('button',name='Skills',exact=True).count()
     assert not main.get_by_role('button',name='知产新闻',exact=True).count()
     assert not main.locator('select').count(), 'Model picker should remain a button menu'
-    for title in ['检索法条','检索案例','合同起草（审核）']:
+    for title in ['检索对比','侵权识别','合规提示','知产文书','合同起草（审核）']:
         assert main.get_by_role('button',name=title,exact=True).count() == 1
 
     # Retry the catalogue, replace the retired selection, and select another Zhipu model.
@@ -108,10 +113,8 @@ with sync_playwright() as p:
     menu.get_by_role('menuitemradio',name='智谱 GLM-4.5-Air',exact=True).click()
     page.screenshot(path=str(OUT/'assistant-home-desktop.png'),full_page=True)
 
-    # The restored form still respects account opt-out, including article-only queries.
-    main.get_by_role('button',name='检索法条',exact=True).click()
-    page.get_by_placeholder('条文序号，如：第57条').fill('第57条')
-    main.get_by_role('button',name='检索',exact=True).click()
+    main.locator('textarea').fill('模拟咨询')
+    main.get_by_role('button', name='发送', exact=True).click()
     assert not requests
     page.get_by_role('button',name='账号菜单').click()
     page.get_by_role('menuitem', name='设置', exact=True).click()
@@ -127,28 +130,10 @@ with sync_playwright() as p:
         assert 'skillId' not in requests[-1] and 'skillVersion' not in requests[-1]
         assert any(m.get('content') == 'Mocked answer '+str(count) for row in records.values() if row['kind']=='sessions' for m in row['payload']['messages'])
 
-    main.get_by_role('button',name='检索法条',exact=True).click()
-    page.get_by_placeholder('法典名称，如：商标法').fill('商标法')
-    page.get_by_placeholder('条文序号，如：第57条').fill('第57条')
-    main.get_by_role('button',name='深度',exact=True).click()
-    page.screenshot(path=str(OUT/'assistant-statute-form.png'),full_page=True)
-    main.get_by_role('button',name='检索',exact=True).click()
-    wait_saved(1)
-    prompt = requests[-1]['messages'][-1]['content']
-    assert all(text in prompt for text in ['商标法','第57条','逐项分析','不提供网页搜索'])
-
-    main.get_by_role('button',name='检索案例',exact=True).click()
-    page.get_by_placeholder('案由，如：商标权纠纷').fill('商标权纠纷')
-    selects = main.locator('select')
-    selects.nth(0).select_option('民事案件')
-    selects.nth(1).select_option('二审')
-    selects.nth(2).select_option('中级人民法院')
-    page.get_by_placeholder('裁判年份，如：2023（可选）').fill('2025')
-    main.get_by_role('button',name='快速',exact=True).click()
-    main.get_by_role('button',name='检索',exact=True).click()
-    wait_saved(2)
-    prompt = requests[-1]['messages'][-1]['content']
-    assert all(text in prompt for text in ['商标权纠纷','民事案件','二审','中级人民法院','2025','简要说明理由'])
+    for count in (1, 2):
+        main.locator('textarea').fill('模拟咨询 ' + str(count))
+        main.get_by_role('button', name='发送', exact=True).click()
+        wait_saved(count)
 
     main.get_by_role('button',name='合同起草（审核）',exact=True).click()
     panel = page.get_by_role('complementary',name='合同起草与审核')
@@ -307,12 +292,62 @@ with sync_playwright() as p:
     page.keyboard.press('Escape')
     custom.wait_for(state='hidden')
 
-    # Exercise the workbench via its normal controls. The mock model emits a fixture;
-    # server-side citation/format checks are exercised separately in the Node suite.
-    page.get_by_role('button',name='事务台',exact=True).click()
-    for scenario in ['检索比对','侵权识别','合规提示','知产文书']:
-        workbench.get_by_role('button',name=scenario,exact=True).click()
+    # Import files through the composer, including a real PDF text layer and a scanned page.
+    fixture_page = context.new_page()
+    fixture_page.set_content('<p>Public sample project</p>')
+    pdf_bytes = fixture_page.pdf()
+    png_bytes = fixture_page.screenshot()
+    import base64
+    fixture_page.set_content('<img src="data:image/png;base64,' + base64.b64encode(png_bytes).decode() + '">')
+    scan_bytes = fixture_page.pdf()
+    fixture_page.close()
+    fields = {
+        'compare': ('著作权材料比对', '权利或作品材料 A', '检索对比'),
+        'infringement': ('商标侵权', '权利基础、登记号或底稿', '侵权识别'),
+        'compliance': ('开源许可证', '组件、版本与许可证原文', '合规提示'),
+        'draft': ('保密协议（NDA）', '当事人及角色', '知产文书'),
+    }
+    received = []
+    def prefill(route):
+        data = route.request.post_data_json
+        received.append(data)
+        task, label, _ = fields[data['mode']]
+        route.fulfill(json={'task':task,'values':{label:'公开示例'}})
+    page.route('**/api/agent/prefill', prefill)
+    page.route('**/api/agent/files', lambda route: route.fulfill(json={'text':'示例文本','truncated':False}))
+    for mode, (name, mime, data) in zip(fields, [
+        ('sample.pdf','application/pdf',pdf_bytes), ('scan.pdf','application/pdf',scan_bytes),
+        ('material.png','image/png',png_bytes), ('example.md','text/markdown',b'sample')
+    ]):
+        main.get_by_role('button',name='上传文件填表').click()
+        dialog = page.get_by_role('dialog',name='上传文件填表')
+        dialog.locator('input[type=file]').set_input_files({'name':name,'mimeType':mime,'buffer':data})
+        task, label, destination = fields[mode]
+        dialog.get_by_role('button', name=destination, exact=True).click()
+        form = page.get_by_role('complementary',name=destination,exact=True)
+        try:
+            form.get_by_label(label,exact=True).wait_for(timeout=18000)
+        except Exception:
+            print('Import failed', mode, 'model requests:', len(received), 'dialog:', dialog.inner_text() if dialog.count() else 'closed', 'visible panel:', page.locator('aside[aria-label]:visible').all_inner_texts()[-1][:500], 'errors:', errors, flush=True)
+            raise
+        assert form.get_by_label(destination+'事项').input_value() == task
+        assert form.get_by_label(label,exact=True).input_value() == '公开示例'
+        form.get_by_label(label,exact=True).fill('人工修改')
+        if mode == 'compare':
+            assert 'Public sample project' in received[-1]['text']
+        if mode in ('infringement','compliance'):
+            assert received[-1]['images'][0].startswith('data:image/jpeg;base64,')
+        assert not form.get_by_role('checkbox',name=re.compile('^我已脱敏')).is_checked()
+        form.get_by_role('button',name='关闭'+destination).click()
+
+    def open_workflow(name):
+        main.get_by_role('button', name=name, exact=True).click()
+        return page.get_by_role('complementary', name=name, exact=True)
+    for scenario in ['检索对比','侵权识别','合规提示','知产文书']:
+        workbench = open_workflow(scenario)
         workbench.get_by_label(scenario+'事项').wait_for()
+        if scenario != '知产文书':
+            workbench.get_by_role('button', name='关闭'+scenario).click()
     workbench.get_by_label('知产文书事项').select_option('保密协议（NDA）')
     workbench.get_by_label('当事人及角色',exact=True).fill('公开示例：甲方委托乙方测试。')
     send_report = workbench.get_by_role('button',name='生成文书初稿',exact=True)
@@ -321,15 +356,18 @@ with sync_playwright() as p:
     send_report.click()
     workbench.get_by_text('Mocked answer 7',exact=True).wait_for()
     assert requests[-1]['workflow'] == 'draft'
-    workbench.get_by_role('button',name='合规提示',exact=True).click()
+    workbench.get_by_role('button',name='关闭知产文书').click()
+    workbench = open_workflow('合规提示')
+    workbench.get_by_label('合规提示事项').select_option('研发合规清单')
     workbench.get_by_label('立项',exact=False).check()
     with page.expect_download() as checked_file:
         workbench.get_by_role('button',name='导出清单（1/5）').click()
     assert '[x] 立项' in checked_file.value.path().read_text(encoding='utf-8')
-    workbench.get_by_role('button',name='检索比对',exact=True).click()
+    workbench.get_by_role('button',name='关闭合规提示').click()
+    workbench = open_workflow('检索对比')
     workbench.get_by_label('查找知识库材料').fill('商标 混淆')
     assert workbench.locator('summary:visible').count() > 0
-    workbench.get_by_label('检索比对事项').select_option('专利 FTO 初筛')
+    workbench.get_by_label('检索对比事项').select_option('专利 FTO 初筛')
     assert workbench.get_by_label('技术方案',exact=True).is_disabled()
     workbench.get_by_label('我确认方案已公开',exact=False).check()
     workbench.get_by_label('技术方案',exact=True).fill('温度传感器')
@@ -353,17 +391,16 @@ with sync_playwright() as p:
         xml = doc.read('word/document.xml').decode()
         assert all(s in xml for s in ['人工复核示例','去重后 1 条','未完成环节','需人工复核'])
     assert len(requests) == 7
-    workbench.get_by_role('button',name='关闭事务台').click()
+    workbench.get_by_role('button',name='关闭检索对比').click()
 
     # Mobile layout: each restored control remains in view with no horizontal overflow.
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-    for title in ['检索法条','检索案例','合同起草（审核）']:
+    for title in ['检索对比','侵权识别','合规提示','知产文书','合同起草（审核）']:
         box = main.get_by_role('button',name=title,exact=True).bounding_box()
         assert box and box['x'] >= 0 and box['x'] + box['width'] <= 390
-    main.get_by_role('button',name='检索案例',exact=True).click()
-    page.screenshot(path=str(OUT/'assistant-case-mobile.png'),full_page=True)
-    main.get_by_role('button',name='取消',exact=True).click()
+    panel = open_workflow('侵权识别')
+    panel.get_by_role('button', name='关闭侵权识别').click()
     main.get_by_role('button',name='合同起草（审核）',exact=True).click()
     page.screenshot(path=str(OUT/'assistant-contract-mobile.png'),full_page=True)
     page.get_by_role('button', name='关闭合同面板').click()
