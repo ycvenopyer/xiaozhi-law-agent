@@ -34,7 +34,7 @@ docs/                                 开发、云端、功能说明与研发合
 
 | 要维护的功能 | 从哪里开始看 |
 | --- | --- |
-| 邮箱验证码登录与账号隐私 | `CloudAccount.tsx`、`LoginBrand.tsx`、`frontend/src/lib/cloudbase.ts` |
+| 验证码登录、密码登录与账号设置 | `CloudAccount.tsx`、`LoginSettings.tsx`、`LoginBrand.tsx`、`frontend/src/lib/cloudbase.ts` |
 | 搜索、查看和保存对话 | `ConversationSearch.tsx` 在浏览器搜索已载入的本账号对话。滚动由 `MessageList.tsx` 管理，保存由 `frontend/src/lib/cloud-store.ts` 管理 |
 | 内置与自定义模型 | 内置型号在 `backend/src/modules/agent/providers.ts`，厂商预设在 `frontend/src/lib/model-presets.ts`，自定义接口转发在 `backend/src/modules/agent/custom-provider.ts` |
 | 今日知产新闻 | `Workbench.tsx` 调用独立新闻接口，`backend/src/modules/agent/ip-news.ts` 向 Tavily 提交固定的公开检索词，并按北京时间筛选当天结果 |

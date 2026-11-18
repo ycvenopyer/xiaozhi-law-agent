@@ -7,6 +7,7 @@ OUT = Path(__file__).resolve().parents[1] / '.qa-artifacts'
 OUT.mkdir(exist_ok=True)
 
 SDK = r"""
+const service = async payload => (await fetch('/qa-auth', {method:'POST',body:JSON.stringify(payload)})).json();
 const auth = {
   async getLoginState() { return sessionStorage.getItem('qa-login') ? {user:{uid:'qa-user'}} : null; },
   async getAccessToken() { return {accessToken:'qa-token'}; },
@@ -14,6 +15,14 @@ const auth = {
     if(token !== '123456') return {error:{message:'验证码错误'},data:{}};
     sessionStorage.setItem('qa-login','1');return {error:null,data:{user:{id:'qa-user'}}};
   }}}; },
+  async signInWithPassword(credentials) {
+    const result = await service({op:'signin', ...credentials});
+    if (!result.error) sessionStorage.setItem('qa-login','1');
+    return result;
+  },
+  async getUser() {return service({op:'profile'});},
+  async updateUser({username}) {return service({op:'username', username});},
+  async reauthenticate() {return {error:null,data:{updateUser:({nonce,password}) => service({op:'password',nonce,password})}};},
   async signOut() { sessionStorage.removeItem('qa-login'); }
 };
 export default {init(){return {auth:()=>auth,storage:{from(){throw new Error('Not used in this test')}}}}};
@@ -27,6 +36,24 @@ with sync_playwright() as p:
     page.on('pageerror', lambda error: errors.append(str(error)))
     records = {}
     model_requests = []
+    profile = {'username': '', 'password': None}
+
+    def authentication(route):
+        args = route.request.post_data_json
+        op = args['op']
+        error = None
+        if op == 'username':
+            profile['username'] = args['username']
+        elif op == 'password':
+            if args['nonce'] == '654321':
+                profile['password'] = args['password']
+            else:
+                error = {'message': 'Invalid code'}
+        elif op == 'signin':
+            valid = (args.get('email') == 'qa@example.test' or args.get('username') == profile['username'])
+            if not valid or args['password'] != profile['password']:
+                error = {'category': 'INVALID_CREDENTIALS'}
+        route.fulfill(json={'error':error, 'data':{'user':{'id':'qa-user','user_metadata':{'username':profile['username']}}}})
 
     def gateway(route):
         request = route.request
@@ -48,6 +75,7 @@ with sync_playwright() as p:
             route.fulfill(json=list(records.values()))
 
     page.route('**/node_modules/.vite/deps/@cloudbase_js-sdk.js*', lambda route: route.fulfill(content_type='application/javascript', body=SDK))
+    page.route('**/qa-auth', authentication)
     page.route('https://*.api.tcloudbasegateway.com/**', gateway)
     page.route('**/api/auth/me', lambda route: route.fulfill(json={'id':'qa-user','email':'qa@example.test'}))
     page.route('**/api/agent/models', lambda route: route.fulfill(json=[{'id':'zhipu-glm','label':'测试模型','available':True,'free':True}]))
@@ -84,6 +112,24 @@ with sync_playwright() as p:
     page.get_by_role('button', name='账号菜单').click()
     page.get_by_role('menuitem', name='设置', exact=True).click()
     page.get_by_role('button', name='清除本地旧记录').wait_for()
+    page.get_by_role('button', name='登录账号', exact=True).click()
+    page.get_by_label('登录用户名').fill('xiaozhi_qa')
+    page.get_by_role('button', name='保存用户名').click()
+    page.get_by_text('用户名已保存。', exact=True).wait_for()
+    page.get_by_role('button', name='发送安全验证码').click()
+    page.get_by_label('安全验证码', exact=True).fill('111111')
+    page.get_by_label('新密码', exact=True).fill('Fixture-Test-2026')
+    page.get_by_label('确认新密码').fill('Different')
+    page.get_by_role('button', name='保存密码').click()
+    page.get_by_role('alert').filter(has_text='两次输入的密码不一致').wait_for()
+    page.get_by_label('确认新密码').fill('Fixture-Test-2026')
+    page.get_by_role('button', name='保存密码').click()
+    page.get_by_role('alert').filter(has_text='密码设置失败').wait_for()
+    assert profile['password'] is None
+    page.get_by_label('安全验证码', exact=True).fill('654321')
+    page.get_by_role('button', name='保存密码').click()
+    page.get_by_text('密码已保存，下次可使用密码登录。').wait_for()
+    page.get_by_role('button', name='账号与隐私').click()
     page.get_by_label('我允许第三方模型处理工作资料').check()
     page.wait_for_load_state('networkidle')
     assert records[('settings','privacy')]['payload']['externalModels'] is True
@@ -105,6 +151,22 @@ with sync_playwright() as p:
     page.set_viewport_size({'width':390,'height':844})
     page.screenshot(path=str(OUT/'login-mobile.png'), full_page=True)
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    for identifier in ('qa@example.test', 'xiaozhi_qa'):
+        page.get_by_role('button', name='密码登录', exact=True).click()
+        page.get_by_label('邮箱或用户名').fill(identifier)
+        page.get_by_label('密码', exact=True).fill('wrong-password')
+        page.get_by_role('button', name='登录', exact=True).click()
+        page.get_by_role('alert').filter(has_text='密码登录失败').wait_for()
+        page.get_by_label('密码', exact=True).fill('Fixture-Test-2026')
+        page.get_by_role('button', name='登录', exact=True).click()
+        page.get_by_text('私人云端空间', exact=True).wait_for()
+        assert ('sessions','old-session') in records
+        assert page.evaluate("!JSON.stringify([localStorage,sessionStorage]).includes('Fixture-Test-2026')")
+        page.get_by_role('button', name='展开侧边栏', exact=True).click()
+        page.get_by_text('旧对话测试', exact=True).first.wait_for()
+        page.get_by_role('button', name='账号菜单').click()
+        page.get_by_role('menuitem', name='退出登录').click()
+        page.get_by_role('heading', name='登录后，继续你的工作').wait_for()
     assert not errors, errors
-    print('PASS: login, OTP error, opt-in privacy, explicit legacy import, logout, mobile layout; no model calls')
+    print('PASS: OTP, username and email/password, verified password setup, privacy, import, logout and mobile layout')
     browser.close()

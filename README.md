@@ -2,7 +2,7 @@
 
 [简体中文](README-zh.md) · [Online workspace](https://xiaozhi-law-agent.top)
 
-XiaoZhi helps intellectual property practitioners review evidence, draft documents, and find relevant statutes and cases in supplied materials. Sign in with an email verification code to access your conversations and files.
+XiaoZhi helps intellectual property practitioners review evidence, draft documents, and find relevant statutes and cases in supplied materials. Sign in with an email verification code, or use your email or username and password. Existing users can set a password and an optional username in account settings.
 
 ## Workspace
 

@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AppearancePanel } from './AppearancePanel';
 import { LoginBrand } from './LoginBrand';
+import { LoginSettings } from './LoginSettings';
 import { WebSearchSettings } from './WebSearchSettings';
 import type { Appearance } from '@/lib/appearance';
 import { clearModelKeys } from '@/lib/custom-models';
@@ -28,6 +29,10 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState('');
+  const [mode, setMode] = useState<'otp' | 'password'>('otp');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
+  const [retryAccount, setRetryAccount] = useState(false);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -36,10 +41,12 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   const verify = useRef<((token: string) => Promise<void>) | null>(null);
 
   async function enter() {
+    setRetryAccount(true);
     const response = await fetch('/api/auth/me', { headers: await authHeaders(), cache: 'no-store' });
     if (!response.ok) throw new Error(response.status === 401 ? '登录失效，请重新登录。' : '后端认证未就绪，请检查 EdgeOne 环境变量。');
     const account = await response.json() as Account;
     await hydrateCloudStore(account.id);
+    setRetryAccount(false);
     setUser(account);
   }
 
@@ -62,7 +69,7 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   }, [cooldown]);
 
   async function sendCode(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError('');
+    event.preventDefault(); setBusy(true); setError(''); setRetryAccount(false);
     try {
       const result = await requireCloud().auth().signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
       if (result.error) throw new Error(result.error.message);
@@ -78,13 +85,35 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   }
 
   async function signIn(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError('');
+    event.preventDefault(); setBusy(true); setError(''); setRetryAccount(false);
     try {
-      if (!verify.current) throw new Error('请先发送验证码。');
-      await verify.current(code.trim());
+      if (mode === 'password') {
+        const login = identifier.trim();
+        const account = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(login) ? { email: login } : { username: login };
+        const result = await requireCloud().auth().signInWithPassword({ ...account, password });
+        if (result.error) {
+          const category = result.error.category;
+          if (category === 'SERVICE_ERROR') throw new Error('连接认证服务失败，请稍后重试。');
+          if (category === 'RATE_LIMITED') throw new Error('尝试次数过多，请稍后重试。');
+          throw new Error('密码登录失败，请核对账号和密码，或使用邮箱验证码登录。');
+        }
+        setPassword('');
+      } else {
+        if (!verify.current) throw new Error('请先发送验证码。');
+        await verify.current(code.trim());
+        setCode(''); setSent(false); verify.current = null;
+      }
       await enter();
     } catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
+  }
+
+  function switchMode(next: typeof mode) {
+    if (next === mode || busy) return;
+    if (next === 'password' && email) setIdentifier(email);
+    if (next === 'otp' && identifier.includes('@')) setEmail(identifier.trim());
+    setMode(next); setPassword(''); setCode(''); setSent(false);
+    verify.current = null; setError(''); setRetryAccount(false);
   }
 
   async function logout() {
@@ -97,6 +126,7 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
       }
     } finally {
       setUser(null); clearCloudStore(); setSent(false); setCode(''); verify.current = null;
+      setPassword(''); setIdentifier(''); setEmail(''); setMode('otp'); setRetryAccount(false); setCooldown(0); setError('');
     }
   }
 
@@ -107,17 +137,26 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
     <section className="flex min-w-0 items-center justify-center px-6 py-8 md:px-10 md:py-12">
       <div className="w-full max-w-[25rem]">
         <h1 className="text-2xl font-semibold tracking-tight md:text-[1.8rem]">登录后，继续你的工作</h1>
-        <p className="mb-7 mt-3 text-sm leading-6 text-muted-foreground">使用邮箱验证码进入你的工作空间。对话、知识库与文件按账号保存。</p>
+        <p className="mb-6 mt-3 text-sm leading-6 text-muted-foreground">对话、知识库与文件按账号保存。</p>
+        <div role="group" aria-label="登录方式" className="mb-5 grid grid-cols-2 gap-1 rounded-xl bg-muted p-1">
+          {([['otp', '验证码登录'], ['password', '密码登录']] as const).map(([id, label]) =>
+            <button key={id} type="button" disabled={busy} aria-pressed={mode === id} onClick={() => switchMode(id)} className={`rounded-lg px-3 py-2 text-sm focus-visible:outline-primary ${mode === id ? 'bg-background font-medium text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{label}</button>)}
+        </div>
         {!cloud && <p role="alert" className="mb-4 text-sm text-destructive">{cloudConfig.error || '尚未配置 Publishable Key，请按部署文档完成环境变量配置并重新构建。'}</p>}
-        <form onSubmit={sent ? signIn : sendCode} className="space-y-4">
-          <label className="block text-sm">邮箱<input className={`${field} mt-2`} type="email" autoComplete="email" required value={email} disabled={sent || busy} onChange={event => setEmail(event.target.value)} /></label>
-          {sent && <label className="block text-sm">邮箱验证码<input className={`${field} mt-2`} inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={event => setCode(event.target.value)} /></label>}
+        <form onSubmit={mode === 'password' || sent ? signIn : sendCode} className="space-y-4">
+          {mode === 'password' ? <>
+            <label className="block text-sm">邮箱或用户名<input name="username" className={`${field} mt-2`} autoComplete="username" autoCapitalize="none" spellCheck={false} required disabled={busy} value={identifier} onChange={e => setIdentifier(e.target.value)} /></label>
+            <label className="block text-sm">密码<input name="password" className={`${field} mt-2`} type="password" autoComplete="current-password" required disabled={busy} value={password} onChange={e => setPassword(e.target.value)} /></label>
+          </> : <>
+            <label className="block text-sm">邮箱<input className={`${field} mt-2`} type="email" autoComplete="email" required value={email} disabled={sent || busy} onChange={event => setEmail(event.target.value)} /></label>
+            {sent && <label className="block text-sm">邮箱验证码<input className={`${field} mt-2`} inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={event => setCode(event.target.value)} /></label>}
+          </>}
           {error && <p role="alert" className="text-sm leading-6 text-destructive">{error}</p>}
-          <button disabled={!cloud || busy} className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}{sent ? '验证并进入' : '发送邮箱验证码'}</button>
+          <button disabled={!cloud || busy} className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : mode === 'password' ? <LockKeyhole className="h-4 w-4" /> : <Mail className="h-4 w-4" />}{mode === 'password' ? '登录' : sent ? '验证并进入' : '发送邮箱验证码'}</button>
         </form>
         {sent && <div className="mt-3 flex gap-3 text-xs"><button disabled={busy || cooldown > 0} onClick={event => void sendCode(event)} className="disabled:opacity-40">{cooldown ? `${cooldown} 秒后可重发` : '重新发送'}</button><button disabled={busy} onClick={() => { setSent(false); setCode(''); verify.current = null; }}>更换邮箱</button></div>}
-        {cloud && error && <button className={`${button} mt-3`} onClick={() => void enter().catch(cause => setError(errorText(cause)))}>重试读取已登录账号</button>}
-        <div className="mt-8 flex items-start gap-2 border-t border-border pt-5 text-xs leading-5 text-muted-foreground"><LockKeyhole className="mt-0.5 h-4 w-4 shrink-0" />首次验证将创建账号。第三方模型处理默认关闭，可在登录后设置。</div>
+        {cloud && error && retryAccount && <button className={`${button} mt-3`} disabled={busy} onClick={() => { setBusy(true); void enter().catch(cause => setError(errorText(cause))).finally(() => setBusy(false)); }}>重试读取已登录账号</button>}
+        <div className="mt-8 flex items-start gap-2 border-t border-border pt-5 text-xs leading-5 text-muted-foreground"><LockKeyhole className="mt-0.5 h-4 w-4 shrink-0" />{mode === 'otp' ? '首次邮箱验证将创建账号。' : '首次使用或忘记密码？用邮箱验证码登录后，可在「设置 → 登录账号」设置密码。'}</div>
       </div>
     </section>
   </main>;
@@ -135,7 +174,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
   const account = useContext(Context);
   const sync = useSyncExternalStore(subscribeSync, getSyncStatus);
   const [dialog, setDialog] = useState<'settings' | 'help' | null>(null);
-  const [section, setSection] = useState<'privacy' | 'appearance' | 'search'>('privacy');
+  const [section, setSection] = useState<'privacy' | 'account' | 'appearance' | 'search'>('privacy');
   const [external, setExternal] = useState(getPrivacy);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -202,14 +241,16 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
           <div><h3 className="font-medium">检索今日知产新闻</h3><p className="text-muted-foreground">在「设置 → 联网搜索」保存 Tavily API Key，然后到事务台检索当天的知产动态。</p></div>
           <div><h3 className="font-medium">找回旧资料与附件</h3><p className="text-muted-foreground">在设置的「账号与隐私」中备份或导入旧浏览器资料，也可以下载已保存的文件原件。</p></div>
         </div> : <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[9rem_minmax(0,1fr)] sm:grid-rows-1">
-          <nav aria-label="设置分类" className="flex gap-1 border-b border-border bg-muted/30 p-2 sm:flex-col sm:border-b-0 sm:border-r">
+          <nav aria-label="设置分类" className="grid grid-cols-2 gap-1 border-b border-border bg-muted/30 p-2 sm:flex sm:flex-col sm:border-b-0 sm:border-r">
             {([
               ['privacy', '账号与隐私', ShieldCheck],
+              ['account', '登录账号', LockKeyhole],
               ['appearance', '界面外观', Palette],
               ['search', '联网搜索', Search],
             ] as const).map(([id, label, Icon]) => <button type="button" key={id} aria-pressed={section === id} disabled={busy} onClick={() => setSection(id)} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${section === id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="size-4" />{label}</button>)}
           </nav>
           <div className="min-h-0 overflow-y-auto p-4 sm:p-5">
+            {section === 'account' && <LoginSettings email={account.user.email} busy={busy} setBusy={setBusy} />}
             {section === 'appearance' && <AppearancePanel value={appearance} onChange={onAppearanceChange} />}
             {section === 'search' && <WebSearchSettings accountId={account.user.id} configured={searchConfigured} onChange={onSearchKeyChange} />}
             {section === 'privacy' && <>
