@@ -37,7 +37,7 @@ docs/                                 开发、云端、功能说明与研发合
 | 邮箱验证码登录与账号隐私 | `CloudAccount.tsx`、`LoginBrand.tsx`、`frontend/src/lib/cloudbase.ts` |
 | 搜索、查看和保存对话 | `ConversationSearch.tsx` 在浏览器搜索已载入的本账号对话。滚动由 `MessageList.tsx` 管理，保存由 `frontend/src/lib/cloud-store.ts` 管理 |
 | 内置与自定义模型 | 内置型号在 `backend/src/modules/agent/providers.ts`，厂商预设在 `frontend/src/lib/model-presets.ts`，自定义接口转发在 `backend/src/modules/agent/custom-provider.ts` |
-| 今日知产新闻 | `Workbench.tsx` 调用独立新闻接口，`backend/src/modules/agent/ip-news.ts` 筛选北京时间当天发布的智谱搜索来源。搜索只向模型发送公开检索词 |
+| 今日知产新闻 | `Workbench.tsx` 调用独立新闻接口，`backend/src/modules/agent/ip-news.ts` 向 Tavily 提交固定的公开检索词，并按北京时间筛选当天结果 |
 
 前端组件位于 `frontend/src/components/assistant/`。当前功能清单见 [产品功能](product-features.md)。研发合规、FTO 和法规资料属于后续方案，集中在 [项目升级文档](项目升级文档/小知合规方向-项目说明.md)。
 
@@ -45,7 +45,7 @@ docs/                                 开发、云端、功能说明与研发合
 
 未保存过模型偏好时，工作区初始选择 GLM-4.7，加载模型列表后根据可用状态更新。智谱内置模型共用后端的 `ZHIPU_API_KEY`。页面中的自定义配置只属于当前浏览器账号，可用来测试支持 OpenAI 兼容流式响应的 HTTPS 端点。若要将自托管端点设为全站默认，需要在后端注册端点，并调整 `pages/Index.tsx` 中的新用户初始选项。
 
-普通对话使用已选模型。今日知产新闻单独调用智谱原生搜索，其他端点需要有对应的搜索适配才能接入该功能。
+普通对话和文件起草使用已选模型。今日知产新闻使用「设置 → 联网搜索」配置的 Tavily API Key，Key 按账号保存在当前标签页的 `sessionStorage`，退出登录时移除。
 
 ## 本地运行
 
@@ -71,7 +71,7 @@ docs/                                 开发、云端、功能说明与研发合
 
 发布前完成 [CloudBase 迁移和环境变量配置](cloudbase.md)。同一个环境的前端、后端应使用一致的环境 ID 和 Publishable Key。前端构建时读取 `VITE_*` 变量，修改后需触发新部署。自定义模型 Key 通过页面配置，智谱内置模型使用后端的 `ZHIPU_API_KEY`。为预览环境单独核对变量和跨域来源。配置自定义域名见 [域名指南](domain.md)。
 
-发布后先访问 `/api/health`，再用测试账号验证登录、模型列表、流式聊天、今日知产新闻、文件下载和跨账号隔离。健康检查只确认 API 可响应。新闻联网权限和计费取决于所使用的智谱账户与模型。
+发布后先访问 `/api/health`，再用测试账号验证登录、模型列表、流式聊天、今日知产新闻、文件下载和跨账号隔离。健康检查只确认 API 可响应。新闻功能无需为 EdgeOne 配置 Tavily Key 或搜索厂商变量。测试账号在设置中填写自己的 Key 后，检索使用该 Key 对应的 Tavily 额度。
 
 ## API
 
@@ -83,7 +83,7 @@ docs/                                 开发、云端、功能说明与研发合
 | `POST /api/agent/chat` | 登录及模型外发授权，保存并流式返回模型回答 |
 | `POST /api/agent/files` | 登录后解析 multipart 文件，原件由客户端存入 CloudBase 私有桶 |
 | `POST /api/agent/custom-model/test` | 登录后向自定义端点发送固定短消息，测试流式响应 |
-| `POST /api/agent/ip-news` | 登录及模型外发授权，使用所选智谱模型的原生搜索返回当天来源 |
+| `POST /api/agent/ip-news` | 登录后提交当前用户的 `{ apiKey }`，由后端向 Tavily 查询当天的公开新闻 |
 | `POST /api/agent/extract-dossier` | 旧客户端兼容接口，仍要求登录和外发授权 |
 
 对话请求须先保存用户消息与回答占位。聊天最多 60 条消息，JSON 请求上限 5 MiB，文件上限 4 MiB，提取文本上限 40,000 字符。PDF 解析读取嵌入文本，扫描件需先 OCR 或作为支持视觉输入的图片提交。Word 请使用 DOCX。聊天在 100 秒主动截止，正常完成、取消或超时都会尽力保存已收到的内容。
@@ -111,4 +111,4 @@ python scripts/sidebar-ui-qa.py
 python scripts/assistant-ui-qa.py
 ```
 
-三个脚本分别覆盖登录与导入、项目与账号隔离，以及对话搜索、长对话滚动、事务台和模型配置。它们拦截云端和模型请求。截图存放在 Git 忽略的 `.qa-artifacts/`，构建产物在 `frontend/dist/`，依赖可从根锁文件重新安装。
+三个脚本分别覆盖登录与导入、项目与账号隔离，以及对话搜索、长对话滚动、事务台和模型配置。它们拦截云端、模型和新闻请求。截图存放在 Git 忽略的 `.qa-artifacts/`，构建产物在 `frontend/dist/`，依赖可从根锁文件重新安装。

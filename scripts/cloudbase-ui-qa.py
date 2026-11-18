@@ -89,10 +89,17 @@ with sync_playwright() as p:
     assert records[('settings','privacy')]['payload']['externalModels'] is True
     page.get_by_label('我允许第三方模型处理工作资料').uncheck()
     page.wait_for_load_state('networkidle')
+    page.get_by_role('button', name='联网搜索', exact=True).click()
+    page.get_by_label('Tavily API Key', exact=True).fill('synthetic-tavily-key')
+    page.get_by_role('button', name='保存 Key', exact=True).click()
+    assert page.evaluate("sessionStorage.getItem('xiaozhi-tavily-key:qa-user')") == 'synthetic-tavily-key'
     page.get_by_role('button', name='关闭', exact=True).click()
+    page.reload(wait_until='networkidle')
+    assert page.evaluate("sessionStorage.getItem('xiaozhi-tavily-key:qa-user')") == 'synthetic-tavily-key'
     page.get_by_role('button', name='账号菜单').click()
     page.get_by_role('menuitem', name='退出登录').click()
     page.get_by_role('heading', name='登录后，继续你的工作').wait_for()
+    assert page.evaluate("sessionStorage.getItem('xiaozhi-tavily-key:qa-user')") is None
     assert not page.get_by_text('旧记录测试内容', exact=True).count()
     assert not model_requests
     page.set_viewport_size({'width':390,'height':844})

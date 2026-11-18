@@ -26,6 +26,7 @@ import { AccountControls, useAccountId } from '@/components/assistant/CloudAccou
 import { CustomModelSettings } from '@/components/assistant/CustomModelSettings';
 import { customModelRequest, getModelKey, loadCustomModels, removeModelKey, saveCustomModels, setModelKey, type CustomModel } from '@/lib/custom-models';
 import { authHeaders } from '@/lib/cloudbase';
+import { getTavilyKey } from '@/lib/tavily-key';
 import { flushCloudStore, getPrivacy, loadCollection, refreshConversation, reportSyncError, saveCollection, stageRecovery } from '@/lib/cloud-store';
 
 function makeMsg(role: ChatMessage['role'], content = ''): ChatMessage {
@@ -81,6 +82,7 @@ function fileToImageDataUrl(file: File): Promise<string> {
 
 export default function Index() {
   const accountId = useAccountId();
+  const [searchConfigured, setSearchConfigured] = useState(() => Boolean(getTavilyKey(accountId)));
   const [initial] = useState(() => {
     const history = loadSessions();
     const projects = loadProjects();
@@ -611,7 +613,8 @@ export default function Index() {
         onDeleteProject={deleteProject}
         onOpenProject={openProject}
         right={appearance.sidebarSide === 'right'}
-        footer={<AccountControls disabled={streaming} appearance={appearance} onAppearanceChange={setAppearance} />}
+        footer={<AccountControls disabled={streaming} appearance={appearance} onAppearanceChange={setAppearance}
+          searchConfigured={searchConfigured} onSearchKeyChange={setSearchConfigured} />}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         disabled={workspaceBusy}
@@ -699,11 +702,11 @@ export default function Index() {
         open={workbenchOpen}
         onClose={() => setWorkbenchOpen(false)}
         onGenerate={generateText}
-        modelLabel={modelOptions.find(model => model.id === selectedModel)?.label || '未选择模型'}
-        workspaceBusy={workspaceBusy}
+        searchConfigured={searchConfigured}
         onSearchNews={async signal => {
-          if (!getPrivacy()) throw new Error('请在「设置 → 账号与隐私」中开启第三方模型处理，再检索新闻。');
-          return fetchIpNews(selectedModel, modelRequest(), signal);
+          const key = getTavilyKey(accountId);
+          if (!key) throw new Error('请在「设置 → 联网搜索」配置 Tavily API Key。');
+          return fetchIpNews(key, signal);
         }}
       />
 

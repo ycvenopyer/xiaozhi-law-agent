@@ -13,7 +13,7 @@ XiaoZhi helps intellectual property practitioners review evidence, draft documen
 | Top toolbar | Open the knowledge base or Workbench for document drafting and today's IP news |
 | Composer | Attach files, research statutes or cases, draft or review contracts, and switch between built-in and custom models |
 
-Statute and case research uses the enabled knowledge base and supplied materials. The IP news tab uses the selected Zhipu endpoint's native search and displays sources from the current calendar day in Asia/Shanghai. Search may be billed separately. Verify citations and drafts before relying on them. The old dossier interface has been retired. Legacy dossier records remain importable and are no longer attached to chat prompts by the current UI.
+Statute and case research uses the enabled knowledge base and supplied materials. For today's IP news, add your Tavily API key under Settings → Web Search, then search in the Workbench. It sends a fixed public query to Tavily and filters results by the current calendar day in Asia/Shanghai. Search uses your Tavily quota. Verify citations and drafts before relying on them. The old dossier interface has been retired. Legacy dossier records remain importable and are no longer attached to chat prompts by the current UI.
 
 ## Local development
 

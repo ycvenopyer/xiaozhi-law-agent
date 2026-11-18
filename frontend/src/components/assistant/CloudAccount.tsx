@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
-import { LockKeyhole, Mail, Loader2, Download, ChevronsUpDown, CircleHelp, LogOut, Palette, Settings2, ShieldCheck } from 'lucide-react';
+import { LockKeyhole, Mail, Loader2, Download, ChevronsUpDown, CircleHelp, LogOut, Palette, Search, Settings2, ShieldCheck } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AppearancePanel } from './AppearancePanel';
 import { LoginBrand } from './LoginBrand';
+import { WebSearchSettings } from './WebSearchSettings';
 import type { Appearance } from '@/lib/appearance';
 import { clearModelKeys } from '@/lib/custom-models';
+import { setTavilyKey } from '@/lib/tavily-key';
 import { cloud, cloudConfig, authHeaders, requireCloud } from '@/lib/cloudbase';
 import { clearCloudStore, exportRecovery, flushCloudStore, getPrivacy, getSyncStatus, hydrateCloudStore,
   loadCollection, saveCollection, subscribeSync } from '@/lib/cloud-store';
@@ -88,8 +90,14 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   async function logout() {
     await flushCloudStore();
     await requireCloud().auth().signOut();
-    if (user) clearModelKeys(user.id);
-    setUser(null); clearCloudStore(); setSent(false); setCode(''); verify.current = null;
+    try {
+      if (user) {
+        setTavilyKey(user.id, '');
+        clearModelKeys(user.id);
+      }
+    } finally {
+      setUser(null); clearCloudStore(); setSent(false); setCode(''); verify.current = null;
+    }
   }
 
   if (loading) return <div className="flex min-h-screen items-center justify-center gap-2 bg-background text-sm"><Loader2 className="h-4 w-4 animate-spin" />正在读取账号与云端资料…</div>;
@@ -119,13 +127,15 @@ interface AccountControlsProps {
   disabled?: boolean;
   appearance: Appearance;
   onAppearanceChange: (value: Appearance) => void;
+  searchConfigured: boolean;
+  onSearchKeyChange: (configured: boolean) => void;
 }
 
-export function AccountControls({ disabled = false, appearance, onAppearanceChange }: AccountControlsProps) {
+export function AccountControls({ disabled = false, appearance, onAppearanceChange, searchConfigured, onSearchKeyChange }: AccountControlsProps) {
   const account = useContext(Context);
   const sync = useSyncExternalStore(subscribeSync, getSyncStatus);
   const [dialog, setDialog] = useState<'settings' | 'help' | null>(null);
-  const [section, setSection] = useState<'privacy' | 'appearance'>('privacy');
+  const [section, setSection] = useState<'privacy' | 'appearance' | 'search'>('privacy');
   const [external, setExternal] = useState(getPrivacy);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -189,16 +199,20 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
         {dialog === 'help' ? <div className="space-y-4 overflow-y-auto p-5 text-sm leading-6">
           <div><h3 className="font-medium">开始对话</h3><p className="text-muted-foreground">在设置里授权第三方模型处理，然后从输入框选择模型。检索法条和案例时，可通过知识库或普通附件提供参考材料。</p></div>
           <div><h3 className="font-medium">配置自己的模型</h3><p className="text-muted-foreground">从模型菜单打开「自定义模型」，填写厂商、接口地址、模型 ID 和 API Key，可先测试连通性。</p></div>
+          <div><h3 className="font-medium">检索今日知产新闻</h3><p className="text-muted-foreground">在「设置 → 联网搜索」保存 Tavily API Key，然后到事务台检索当天的知产动态。</p></div>
           <div><h3 className="font-medium">找回旧资料与附件</h3><p className="text-muted-foreground">在设置的「账号与隐私」中备份或导入旧浏览器资料，也可以下载已保存的文件原件。</p></div>
         </div> : <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[9rem_minmax(0,1fr)] sm:grid-rows-1">
           <nav aria-label="设置分类" className="flex gap-1 border-b border-border bg-muted/30 p-2 sm:flex-col sm:border-b-0 sm:border-r">
             {([
               ['privacy', '账号与隐私', ShieldCheck],
               ['appearance', '界面外观', Palette],
+              ['search', '联网搜索', Search],
             ] as const).map(([id, label, Icon]) => <button type="button" key={id} aria-pressed={section === id} disabled={busy} onClick={() => setSection(id)} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${section === id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="size-4" />{label}</button>)}
           </nav>
           <div className="min-h-0 overflow-y-auto p-4 sm:p-5">
-            {section === 'appearance' ? <AppearancePanel value={appearance} onChange={onAppearanceChange} /> : <>
+            {section === 'appearance' && <AppearancePanel value={appearance} onChange={onAppearanceChange} />}
+            {section === 'search' && <WebSearchSettings accountId={account.user.id} configured={searchConfigured} onChange={onSearchKeyChange} />}
+            {section === 'privacy' && <>
               <div className="rounded-xl border border-border p-4">
                 <h3 className="text-sm font-medium">第三方模型处理</h3>
                 <p className="mt-2 text-xs leading-6 text-muted-foreground">开启后，你选择的模型服务可以处理对话、附件文本、图片及启用的知识库。整理未公开专利、技术交底书和商业秘密时，请按资料要求决定是否授权。</p>

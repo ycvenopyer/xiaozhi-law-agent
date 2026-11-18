@@ -21,6 +21,7 @@ let failModel = false
 let blockModel = false
 let streamError = false
 let newsCalls = 0
+let newsStatus = 200
 let savedStatus = ''
 let record = makeRecord()
 function makeRecord() {
@@ -52,21 +53,30 @@ globalThis.fetch = async (url, init) => {
     savedStatus = record.payload.messages.at(-1)?.status || ''
     return json(record)
   }
+  if (address === 'https://api.tavily.com/search') {
+    newsCalls++
+    assert.equal(init?.method, 'POST')
+    assert.equal(init?.redirect, 'error')
+    assert.equal(headers.get('authorization'), 'Bearer synthetic-tavily-key')
+    const body = JSON.parse(String(init?.body))
+    const date = body.query.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+    assert.ok(date)
+    assert.deepEqual(body, {
+      query: `${date} 中国知识产权新闻：专利、商标、版权、商业秘密、政策和司法裁判`,
+      topic: 'news', search_depth: 'basic', max_results: 20, time_range: 'day',
+      include_published_date: true, include_answer: false, include_raw_content: false,
+    })
+    if (newsStatus !== 200) return json({ message: 'upstream diagnostic synthetic-tavily-key' }, newsStatus)
+    return json({ results: [
+      { title: '今日发布的专利公告', url: 'https://example.test/latest', published_date: new Date(`${date}T01:00:00+08:00`).toUTCString() },
+      { title: '昨日专利动态', url: 'https://example.test/archive', published_date: '2000-01-01' },
+      { title: '未注明发布日期的商标新闻', url: 'https://example.test/undated' },
+      { title: '重复专利公告', url: 'https://example.test/latest#anchor', published_date: date },
+      { title: '无关消息', url: 'https://example.test/unrelated', published_date: date },
+    ] })
+  }
   if (address.endsWith('/chat/completions')) {
     const body = JSON.parse(String(init?.body))
-    if (body.tools?.some((tool: { type: string }) => tool.type === 'web_search')) {
-      newsCalls++
-      assert.equal(body.model, 'glm-4.7-flash')
-      assert.equal(body.messages.length, 1)
-      const date = body.tools[0].web_search.search_query.match(/\d{4}-\d{2}-\d{2}/)?.[0]
-      assert.ok(date)
-      return json({ web_search: [
-        { title: '今日发布的专利公告', link: 'https://example.test/latest', publish_date: date, media: '示例来源' },
-        { title: '昨日专利动态', link: 'https://example.test/archive', publish_date: '2000-01-01' },
-        { title: '未注明发布日期的商标新闻', link: 'https://example.test/undated' },
-        { title: '重复专利公告', link: 'https://example.test/latest#anchor', publish_date: date },
-      ] })
-    }
     modelCalls.push(address)
     assert.ok((body.tools || []).every((tool: { function: { name: string } }) => ['calculator', 'get_datetime'].includes(tool.function.name)))
     if (blockModel) return new Promise((_resolve, reject) => {
@@ -171,21 +181,26 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
       await request(app).post('/api/agent/custom-model/test').set(auth).send({ ...config, baseUrl: 'https://localhost' }).expect(400)
       assert.equal(modelCalls.length, previousCalls)
     })
-    await t.test('news uses the selected model and returns only dated sources from today', async () => {
-      const body = { model: 'zhipu-flash' }
+    await t.test('authenticated news uses the supplied Tavily key and filters by Beijing date', async () => {
+      const body = { apiKey: 'synthetic-tavily-key' }
       await request(app).post('/api/agent/ip-news').send(body).expect(401)
+      await request(app).post('/api/agent/ip-news').set(auth).send({ model: 'zhipu-flash' }).expect(400)
+      assert.equal(newsCalls, 0)
+      const previousModelCalls = modelCalls.length
       consent = false
       try {
-        await request(app).post('/api/agent/ip-news').set(auth).send(body).expect(403)
-      } finally { consent = true }
-      const customModel = { baseUrl: 'https://api.example.test/v1', model: 'test', apiKey: 'synthetic-key', vision: false, tools: false }
-      await request(app).post('/api/agent/ip-news').set(auth).send({ model: 'custom-test', customModel }).expect(400)
-      assert.equal(newsCalls, 0)
-      const result = await request(app).post('/api/agent/ip-news').set(auth)
-        .send({ ...body, knowledge: 'private knowledge', messages: [{ role: 'user', content: 'private history' }] }).expect(200)
-      assert.equal(newsCalls, 1)
-      assert.equal(result.body.articles.length, 1)
-      assert.equal(result.body.articles[0].url, 'https://example.test/latest')
+        const result = await request(app).post('/api/agent/ip-news').set(auth)
+          .send({ ...body, model: 'custom-unused', knowledge: 'private knowledge', messages: ['private history'] })
+          .expect('Cache-Control', /no-store/).expect(200)
+        assert.equal(newsCalls, 1)
+        assert.equal(modelCalls.length, previousModelCalls)
+        assert.deepEqual(result.body.articles.map((article: { url: string }) => article.url), ['https://example.test/latest'])
+
+        newsStatus = 401
+        const denied = await request(app).post('/api/agent/ip-news').set(auth).send(body).expect(403)
+        assert.match(denied.body.message, /核对 API Key/)
+        assert.doesNotMatch(denied.text, /synthetic-tavily-key|upstream diagnostic/)
+      } finally { consent = true; newsStatus = 200 }
     })
     await t.test('answers are persisted before done and SSE remains uncompressed', async () => {
       for (const path of ['/api/agent/chat', '/agent/chat']) {

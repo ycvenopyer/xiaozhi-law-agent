@@ -21,6 +21,7 @@ const modelSchema = z.object({
   model: z.string(),
   customModel: customModelSchema.optional(),
 });
+const newsSchema = z.object({ apiKey: z.string().trim().max(512).regex(/^[!-~]+$/) });
 const chatSchema = modelSchema.extend({
   messages: z.array(messageSchema).min(1).max(60),
   knowledge: z.string().optional(), dossier: z.string().optional(),
@@ -37,17 +38,16 @@ function selectedModel(id: string, hasImages: boolean, custom?: z.infer<typeof c
 }
 
 agentRouter.post('/ip-news', async (req, res) => {
-  const parsed = modelSchema.safeParse(req.body);
-  if (!parsed.success) throw new AppError(400, '请先选择模型。');
-  const provider = selectedModel(parsed.data.model, false, parsed.data.customModel);
-  await requireModelConsent(identity(res).token);
+  res.set('Cache-Control', 'no-store');
+  const parsed = newsSchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, '请在「设置 → 联网搜索」填写有效的 Tavily API Key。');
   const controller = new AbortController();
   const abort = () => controller.abort();
   const timer = setTimeout(abort, 45_000);
   res.once('close', abort);
   try {
-    const result = await findIpNews(provider, controller.signal);
-    if (!res.destroyed) return res.set('Cache-Control', 'no-store').json(result);
+    const result = await findIpNews(parsed.data.apiKey, controller.signal);
+    if (!res.destroyed) return res.json(result);
   } catch (error) {
     if (res.destroyed) return undefined;
     if (error instanceof AppError) throw error;

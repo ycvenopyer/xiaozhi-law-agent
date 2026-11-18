@@ -12,15 +12,15 @@ export interface IpNews {
   articles: { title: string; url: string; source: string; summary: string }[];
 }
 
-export async function fetchIpNews(model: string, customModel: CustomModelRequest | undefined, signal: AbortSignal): Promise<IpNews> {
+export async function fetchIpNews(apiKey: string, signal: AbortSignal): Promise<IpNews> {
   const response = await fetch('/api/agent/ip-news', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...await authHeaders() },
-    body: JSON.stringify({ model, customModel }),
+    body: JSON.stringify({ apiKey }),
     signal,
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.message || '新闻搜索失败，请重试。');
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result) throw new Error(result?.message || '新闻搜索失败，请重试。');
   return result;
 }
 

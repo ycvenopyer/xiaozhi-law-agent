@@ -20,8 +20,7 @@ interface Props {
   /** 调用助理生成文本，实时回传 token。 */
   onGenerate: (prompt: string, onToken: (text: string) => void) => Promise<string>;
   onSearchNews: (signal: AbortSignal) => Promise<IpNews>;
-  modelLabel: string;
-  workspaceBusy: boolean;
+  searchConfigured: boolean;
 }
 
 type DocType = 'email' | 'warning' | 'lawyer';
@@ -38,7 +37,7 @@ const EMAIL_SUBTYPES = [
   { id: 'generic', name: '通用商务邮件' },
 ];
 
-export function Workbench({ open, onClose, onGenerate, onSearchNews, modelLabel, workspaceBusy }: Props) {
+export function Workbench({ open, onClose, onGenerate, onSearchNews, searchConfigured }: Props) {
   const [tab, setTab] = useState<Tab>('news');
 
   return (
@@ -75,7 +74,7 @@ export function Workbench({ open, onClose, onGenerate, onSearchNews, modelLabel,
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
-          <div hidden={tab !== 'news'}><NewsTab onSearchNews={onSearchNews} modelLabel={modelLabel} workspaceBusy={workspaceBusy} /></div>
+          <div hidden={tab !== 'news'}><NewsTab onSearchNews={onSearchNews} searchConfigured={searchConfigured} /></div>
           <div hidden={tab !== 'doc'}><DocTab onGenerate={onGenerate} /></div>
         </div>
       </aside>
@@ -83,7 +82,7 @@ export function Workbench({ open, onClose, onGenerate, onSearchNews, modelLabel,
   );
 }
 
-function NewsTab({ onSearchNews, modelLabel, workspaceBusy }: Pick<Props, 'onSearchNews' | 'modelLabel' | 'workspaceBusy'>) {
+function NewsTab({ onSearchNews, searchConfigured }: Pick<Props, 'onSearchNews' | 'searchConfigured'>) {
   const [result, setResult] = useState<IpNews | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -91,7 +90,7 @@ function NewsTab({ onSearchNews, modelLabel, workspaceBusy }: Pick<Props, 'onSea
   useEffect(() => () => request.current?.abort(), []);
 
   async function search() {
-    if (request.current || workspaceBusy) return;
+    if (request.current || !searchConfigured) return;
     const controller = new AbortController();
     request.current = controller;
     setBusy(true);
@@ -118,8 +117,10 @@ function NewsTab({ onSearchNews, modelLabel, workspaceBusy }: Pick<Props, 'onSea
           <time className="tabular-nums text-xs text-muted-foreground" dateTime={today}>{today} · 北京时间</time>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">检索当天发布的专利、商标、版权及知识产权政策动态，附原文链接。</p>
-        <p className="mt-2 break-words text-xs text-muted-foreground">当前模型：{modelLabel}。联网搜索可能由供应商单独计费。</p>
-        <button type="button" onClick={() => void search()} disabled={busy || workspaceBusy}
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">{searchConfigured
+          ? '由 Tavily 搜索，使用你的 Tavily 额度。'
+          : '请在「设置 → 联网搜索」配置 Tavily API Key。'}</p>
+        <button type="button" onClick={() => void search()} disabled={busy || !searchConfigured}
           className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-45">
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
           {busy ? '正在检索…' : '检索今日新闻'}
@@ -128,7 +129,7 @@ function NewsTab({ onSearchNews, modelLabel, workspaceBusy }: Pick<Props, 'onSea
       {error && <p role="alert" className="rounded-lg border border-destructive/25 p-3 text-sm leading-6 text-destructive">{error}</p>}
       {result && <div className="space-y-3">
         <p role="status" className="text-xs text-muted-foreground">
-          {result.articles.length ? `找到 ${result.articles.length} 条当天发布的消息` : '本次未找到发布日期为今天的知产新闻。'}
+          {result.articles.length ? `找到 ${result.articles.length} 条当天的消息，日期以原文为准。` : '本次未找到日期为今天的知产新闻。'}
         </p>
         {result.articles.map(article => (
           <article key={article.url} className="rounded-xl border border-border p-3.5">

@@ -13,7 +13,7 @@ export interface ModelProvider {
   completion?: (body: string, signal: AbortSignal) => Promise<Response>;
 }
 
-export const ZHIPU_BASE = 'https://open.bigmodel.cn/api/paas/v4';
+const ZHIPU_BASE = 'https://open.bigmodel.cn/api/paas/v4';
 
 /** Existing model catalogue. Availability means its platform key is configured,
  * not that the endpoint has been tested or its current pricing verified. */

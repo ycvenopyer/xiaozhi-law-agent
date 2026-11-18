@@ -170,8 +170,24 @@ with sync_playwright() as p:
     workbench.get_by_role('button',name='知产新闻',exact=True).click()
     assert not workbench.get_by_role('button',name='期限台账',exact=True).count()
     assert not workbench.get_by_role('button',name='利益冲突',exact=True).count()
+    assert workbench.get_by_role('button',name='检索今日新闻',exact=True).is_disabled()
+    workbench.get_by_role('button',name='关闭事务台').click()
+    page.get_by_role('button',name='账号菜单').click()
+    page.get_by_role('menuitem',name='设置',exact=True).click()
+    page.get_by_role('button',name='联网搜索',exact=True).click()
+    search_key = page.get_by_label('Tavily API Key',exact=True)
+    assert search_key.get_attribute('type') == 'password'
+    search_key.fill('synthetic-tavily-key')
+    page.get_by_role('button',name='保存 Key',exact=True).click()
+    page.get_by_role('status').filter(has_text='当前标签页已保存 API Key').wait_for()
+    assert search_key.input_value() == ''
+    assert 'synthetic-tavily-key' not in page.evaluate('JSON.stringify(localStorage)')
+    assert 'synthetic-tavily-key' not in repr(records)
+    page.screenshot(path=str(OUT/'search-settings-desktop.png'),animations='disabled')
+    page.get_by_role('button',name='关闭',exact=True).click()
+    page.get_by_role('button',name='事务台',exact=True).click()
     def news(route):
-        assert route.request.post_data_json == {'model': 'zhipu-air'}
+        assert route.request.post_data_json == {'apiKey': 'synthetic-tavily-key'}
         route.fulfill(json={'date':'2026-11-18','articles':[
             {'title':'今日专利公告','url':'https://example.test/latest','source':'示例来源','summary':'示例摘要'}
         ]})
@@ -198,6 +214,9 @@ with sync_playwright() as p:
     page.get_by_role('button', name='关闭', exact=True).click()
     account.click()
     page.get_by_role('menuitem', name='设置', exact=True).click()
+    page.get_by_role('button', name='联网搜索', exact=True).click()
+    page.get_by_role('button', name='移除 Key', exact=True).click()
+    assert page.evaluate("sessionStorage.getItem('xiaozhi-tavily-key:qa-user')") is None
     page.get_by_role('button', name='界面外观', exact=True).click()
     page.get_by_role('dialog', name='设置').get_by_text('配色方案', exact=True).wait_for()
     page.get_by_role('button', name='关闭', exact=True).click()
