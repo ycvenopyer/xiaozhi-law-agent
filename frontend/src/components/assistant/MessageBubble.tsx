@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
-import { FileText, Loader2 } from 'lucide-react';
+import { ArrowDown, FileText, Loader2 } from 'lucide-react';
 import type { ChatMessage, AttachedFile } from '@/types/agent';
 import { downloadOriginal, imageDataUrl } from '@/lib/private-files';
 import { Markdown } from './Markdown';
+import { ReportDownloads } from './ReportPreview';
 import { ToolCallCard } from './ToolCallCard';
 import { MessageActions } from './MessageActions';
 
 interface MessageBubbleProps {
   message: ChatMessage;
   avatar?: string;
+  streaming?: boolean;
+  onContinue?: () => void;
   onResend?: (messageId: string, content: string) => void;
   onRegenerate?: (messageId: string) => void;
 }
@@ -35,7 +38,7 @@ function PrivateAttachment({ file }: { file: AttachedFile }) {
   </div>;
 }
 
-export function MessageBubble({ message, avatar, onResend, onRegenerate }: MessageBubbleProps) {
+export function MessageBubble({ message, avatar, streaming, onContinue, onResend, onRegenerate }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
@@ -101,10 +104,10 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
           <MessageActions
             role="user"
             content={message.content}
-            onEdit={() => {
+            onEdit={onResend && (() => {
               setDraft(message.content);
               setEditing(true);
-            }}
+            })}
           />
         )}
       </div>
@@ -113,6 +116,7 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
 
   const empty =
     message.content.trim() === '' && (!message.toolCalls || message.toolCalls.length === 0);
+  const canContinue = message.status === 'interrupted' && message.continuation && onContinue;
 
   return (
     <div className="msg-assistant flex gap-3">
@@ -122,14 +126,16 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
         className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-primary/20"
       />
       <div className="min-w-0 flex-1 pt-1">
-        {empty ? (
+        {empty ? !canContinue && (
           <div className="flex items-center gap-1.5 text-[0.85rem] text-muted-foreground">
-            {message.status === 'generating' && !generationExpired ? <><Loader2 className="h-4 w-4 animate-spin" />思考中…</> : '此回答尚未完成，可重新生成。'}
+            {message.status === 'generating' && (streaming || !generationExpired) ? <><Loader2 className="h-4 w-4 animate-spin" />思考中…</> : '此回答尚未完成，可重新生成。'}
           </div>
         ) : (
           <>
             <div className="rounded-2xl rounded-tl-sm border border-border bg-card px-4 py-2.5"><Markdown content={message.content} /></div>
-            {(message.status === 'failed' || message.status === 'interrupted') && <p role="status" className="mt-2 text-xs text-muted-foreground">生成未完成，可核对已有内容后重新生成。</p>}
+            {!canContinue && (message.status === 'failed' || message.status === 'interrupted') && <p role="status" className="mt-2 text-xs text-muted-foreground">生成未完成，可核对已有内容后重新生成。</p>}
+            {message.exportName && message.content.trim() && message.status !== 'generating' &&
+              <ReportDownloads title={message.exportName} report={message.content} />}
             {message.content.trim() !== '' && (
               <MessageActions
                 role="assistant"
@@ -140,6 +146,15 @@ export function MessageBubble({ message, avatar, onResend, onRegenerate }: Messa
             )}
           </>
         )}
+        {canContinue && <div className="mt-3 flex flex-wrap items-center gap-2.5">
+          <button type="button" onClick={onContinue}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/35 bg-primary/5 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/10">
+            <ArrowDown className="size-3.5" />继续生成
+          </button>
+          <p role="status" className="text-xs text-muted-foreground">
+            {empty ? '本段暂未收到正文，可以继续尝试。' : '已保存本段，继续生成会接在这条回复里。'}
+          </p>
+        </div>}
         {message.toolCalls?.map((t) => (
           <ToolCallCard key={t.id} tool={t} />
         ))}

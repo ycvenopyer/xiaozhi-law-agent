@@ -9,7 +9,7 @@ import { MessageList } from '@/components/assistant/MessageList';
 import { ChatInput } from '@/components/assistant/ChatInput';
 import { EmptyState } from '@/components/assistant/EmptyState';
 import { KnowledgePanel } from '@/components/assistant/KnowledgePanel';
-import { type WorkbenchMode, fetchIpNews, streamChat, uploadFile } from '@/lib/agent-client';
+import { type WorkbenchMode, type WorkbenchGenerate, fetchIpNews, streamChat, uploadFile } from '@/lib/agent-client';
 import { loadSessions, saveSessions, newSessionId } from '@/lib/sessions';
 import { loadProjects, saveProjects } from '@/lib/projects';
 import { loadKB, saveKB, kbToText, type KBEntry } from '@/lib/knowledge';
@@ -17,11 +17,9 @@ import { Workbench } from '@/components/assistant/Workbench';
 import { ContractPanel } from '@/components/assistant/ContractPanel';
 import { loadAppearance, applyAppearance, watchSystemTheme, isDarkMode, type Appearance } from '@/lib/appearance';
 import type {
-  AgentEvent,
   AttachedFile,
   ChatMessage,
   Session,
-  ToolCallView,
   ModelInfo,
   Project,
 } from '@/types/agent';
@@ -30,7 +28,14 @@ import { CustomModelSettings } from '@/components/assistant/CustomModelSettings'
 import { customModelRequest, getModelKey, loadCustomModels, removeModelKey, saveCustomModels, setModelKey, type CustomModel } from '@/lib/custom-models';
 import { authHeaders } from '@/lib/cloudbase';
 import { getTavilyKey } from '@/lib/tavily-key';
-import { flushCloudStore, getPrivacy, loadCollection, refreshConversation, reportSyncError, saveCollection, stageRecovery } from '@/lib/cloud-store';
+import { conversationRevision, getPrivacy, loadCollection, refreshConversation, reportSyncError, saveCollection, stageRecovery } from '@/lib/cloud-store';
+
+interface ComposerDraft {
+  text: string;
+  files: AttachedFile[];
+}
+
+const emptyDraft: ComposerDraft = { text: '', files: [] };
 
 function makeMsg(role: ChatMessage['role'], content = ''): ChatMessage {
   return { id: crypto.randomUUID(), role, content, createdAt: Date.now() };
@@ -62,9 +67,9 @@ export default function Index() {
   const [projectViewId, setProjectViewId] = useState<string | null>(initial.projectViewId);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.matchMedia('(min-width: 768px)').matches);
   const [currentId, setCurrentId] = useState(initial.currentId);
-  const [input, setInput] = useState('');
-  const [files, setFiles] = useState<AttachedFile[]>([]);
-  const [streaming, setStreaming] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
+  const { text: input, files } = drafts[currentId] || emptyDraft;
+  const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(() => new Set());
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [customModels, setCustomModels] = useState(() => loadCustomModels(accountId));
   const [customSettingsOpen, setCustomSettingsOpen] = useState(false);
@@ -75,7 +80,6 @@ export default function Index() {
     const saved = localStorage.getItem(`agent-model:${accountId}`) || localStorage.getItem('agent-model');
     return saved === 'zhipu-flashx' ? 'zhipu-flash' : saved || 'zhipu-glm';
   });
-  const selectedCustom = customModels.find(model => model.id === selectedModel);
   const modelOptions = [
     ...models,
     ...customModels.map(model => ({
@@ -98,7 +102,9 @@ export default function Index() {
   const [contractOpen, setContractOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const noteTimer = useRef<number | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const generationJobs = useRef(new Map<string, AbortController>());
+  const lastWritableSessions = useRef(new Map<string, Session>());
+  const streaming = runningIds.has(currentId);
 
   function showNote(msg: string) {
     setNote(msg);
@@ -165,18 +171,26 @@ export default function Index() {
     }
   }
 
-  const modelRequest = useCallback(() => {
-    if (!selectedModel.startsWith('custom-')) return undefined;
-    const key = selectedCustom && getModelKey(accountId, selectedCustom);
-    if (!selectedCustom || !key) throw new Error('请在自定义模型中重新填写 API Key，或选择其他模型。');
-    return customModelRequest(selectedCustom, key);
-  }, [accountId, selectedCustom, selectedModel]);
+  const modelRequest = useCallback((id = selectedModel) => {
+    if (!id.startsWith('custom-')) return undefined;
+    const model = customModels.find(entry => entry.id === id);
+    const key = model && getModelKey(accountId, model);
+    if (!model || !key) throw new Error('请在自定义模型中重新填写 API Key。');
+    return customModelRequest(model, key);
+  }, [accountId, customModels, selectedModel]);
 
-  // Persist whenever sessions change.
+  // The backend owns running records until it saves the final answer.
   useEffect(() => {
-    if (sessions.length) stageRecovery('sessions', sessions);
-    if (!streaming) saveSessions(sessions);
-  }, [sessions, streaming]);
+    const protectedIds = new Set([...runningIds, ...generationJobs.current.keys()]);
+    const writable = new Map(sessions.filter(session => !protectedIds.has(session.id)).map(session => [session.id, session]));
+    const previous = lastWritableSessions.current;
+    lastWritableSessions.current = writable;
+    if (writable.size !== previous.size || [...writable].some(([id, session]) => previous.get(id) !== session)) {
+      saveSessions(sessions, protectedIds);
+    } else {
+      stageRecovery('sessions', sessions);
+    }
+  }, [sessions, runningIds]);
 
   useEffect(() => { saveProjects(projects); }, [projects]);
 
@@ -185,7 +199,10 @@ export default function Index() {
     void saveCollection('settings', [{ id: 'current-conversation', conversationId: currentId, projectViewId }], false).catch(() => {});
   }, [currentId, projectViewId]);
 
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
+  useEffect(() => {
+    const jobs = generationJobs.current;
+    return () => { jobs.forEach(controller => controller.abort()); };
+  }, []);
 
   // Apply the saved appearance on load and re-apply whenever it changes.
   // Also re-apply on OS color-scheme change when the user picked 'system'.
@@ -219,57 +236,58 @@ export default function Index() {
   const current = sessions.find((s) => s.id === currentId) || null;
   const viewedProject = projects.find(project => project.id === projectViewId);
   const currentProject = viewedProject || projects.find(project => project.id === current?.projectId);
-  const workspaceBusy = streaming;
 
   function closeMobileSidebar() { if (window.matchMedia('(max-width: 767px)').matches) setSidebarOpen(false); }
 
   function selectConversation(id: string) {
-    if (workspaceBusy) return;
     setCurrentId(id); setProjectViewId(null); closeMobileSidebar();
   }
 
   function openProject(id: string) {
-    if (workspaceBusy || !projects.some(project => project.id === id)) return;
+    if (!projects.some(project => project.id === id)) return;
     setProjectViewId(id); closeMobileSidebar();
   }
 
-  const updateCurrent = useCallback(
-    (updater: (s: Session) => Session) => {
-      setSessions((prev) => prev.map((s) => (s.id === currentId ? updater(s) : s)));
-    },
-    [currentId]
-  );
+  const updateDraft = useCallback((id: string, update: (draft: ComposerDraft) => ComposerDraft) => {
+    setDrafts(previous => ({ ...previous, [id]: update(previous[id] || emptyDraft) }));
+  }, []);
+
+  function setInput(text: string) {
+    updateDraft(currentId, draft => ({ ...draft, text }));
+  }
 
   function newChat(projectId?: string) {
-    if (workspaceBusy) return;
     const s = emptySession(projectId && projects.some(project => project.id === projectId) ? projectId : undefined);
     setSessions((prev) => [s, ...prev]);
     setCurrentId(s.id); setProjectViewId(null);
-    setFiles([]);
-    setInput('');
     closeMobileSidebar();
   }
 
   function deleteSession(id: string) {
-    if (workspaceBusy) return;
+    if (generationJobs.current.has(id)) return;
     const next = sessions.filter(session => session.id !== id);
     if (!next.length) next.push(emptySession());
     setSessions(next);
-    if (id === currentId) { setCurrentId(next[0].id); setInput(''); setFiles([]); }
+    if (id === currentId) setCurrentId(next[0].id);
+    setDrafts(previous => {
+      const nextDrafts = { ...previous };
+      delete nextDrafts[id];
+      return nextDrafts;
+    });
   }
 
   function renameSession(id: string, title: string) {
-    if (workspaceBusy || !title.trim()) return;
+    if (generationJobs.current.has(id) || !title.trim()) return;
     setSessions(previous => previous.map(session => session.id === id ? { ...session, title: title.trim().slice(0,80), titleEdited: true, updatedAt: Date.now() } : session));
   }
 
   function pinSession(id: string) {
-    if (workspaceBusy) return;
+    if (generationJobs.current.has(id)) return;
     setSessions(previous => previous.map(session => session.id === id ? { ...session, pinnedAt: session.pinnedAt ? undefined : Date.now() } : session));
   }
 
   function moveSession(id: string, projectId?: string) {
-    if (workspaceBusy || (projectId && !projects.some(project => project.id === projectId))) return;
+    if (generationJobs.current.has(id) || (projectId && !projects.some(project => project.id === projectId))) return;
     setSessions(previous => previous.map(session => session.id === id ? { ...session, projectId, updatedAt: Date.now() } : session));
   }
 
@@ -277,18 +295,20 @@ export default function Index() {
     const now = Date.now();
     const project: Project = { id: crypto.randomUUID(), name: name.trim().slice(0,80), createdAt: now, updatedAt: now };
     setProjects(previous => [...previous, project]);
-    if (sessionId) setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, projectId: project.id, updatedAt: now } : session));
+    if (sessionId && !generationJobs.current.has(sessionId)) {
+      setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, projectId: project.id, updatedAt: now } : session));
+    }
     setProjectViewId(project.id); closeMobileSidebar();
     return project.id;
   }
 
   function renameProject(id: string, name: string) {
-    if (workspaceBusy || !name.trim()) return;
+    if (!name.trim()) return;
     setProjects(previous => previous.map(project => project.id === id ? { ...project, name: name.trim().slice(0,80), updatedAt: Date.now() } : project));
   }
 
   function deleteProject(id: string) {
-    if (workspaceBusy) return;
+    if (sessions.some(session => session.projectId === id && generationJobs.current.has(session.id))) return;
     setProjects(previous => previous.filter(project => project.id !== id));
     setSessions(previous => previous.map(session => session.projectId === id ? { ...session, projectId: undefined, updatedAt: Date.now() } : session));
     if (projectViewId === id) setProjectViewId(null);
@@ -323,229 +343,212 @@ export default function Index() {
         }
       }
     }
-    if (added.length) setFiles((prev) => [...prev, ...added]);
-  }, []);
+    if (added.length) updateDraft(currentId, draft => ({ ...draft, files: [...draft.files, ...added] }));
+  }, [currentId, updateDraft]);
 
   const removeFile = useCallback((id: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
-  }, []);
+    updateDraft(currentId, draft => ({ ...draft, files: draft.files.filter(file => file.id !== id) }));
+  }, [currentId, updateDraft]);
 
-  /**
-   * Save a freshly recognized case file into the library. If the current
-   * conversation already links to a library entry, that entry is updated in
-   * place instead of piling up duplicates from repeated uploads.
-   */
-  const submit = useCallback(
-    async (text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[], onStart?: () => void) => {
-      if ((!text.trim() && !attachFiles.length) || streaming || !current) return;
-      if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
+  const runGeneration = useCallback(async (
+    session: Session,
+    customModel: ReturnType<typeof modelRequest>,
+    onToken?: (text: string) => void,
+    resumeRevision?: number,
+  ) => {
+    const id = session.id;
+    if (generationJobs.current.has(id)) throw new Error('此对话正在生成。');
+    const history = session.messages.slice(0, -1);
+    const userMessage = history.at(-1)!;
+    const assistant = session.messages.at(-1)!;
+    const resuming = resumeRevision !== undefined;
+    const activeSession: Session = resuming
+      ? { ...session, messages: [...history, { ...assistant, status: 'generating' }] }
+      : session;
+    const generation = userMessage.generation;
+    const controller = new AbortController();
+    generationJobs.current.set(id, controller);
+    setRunningIds(new Set(generationJobs.current.keys()));
+    setSessions(previous => previous.some(item => item.id === id)
+      ? previous.map(item => item.id === id ? activeSession : item)
+      : [activeSession, ...previous]);
 
-      let customModel;
-      try { customModel = modelRequest(); }
-      catch (error) { showNote((error as Error).message); return; }
-      const userMsg: ChatMessage = makeMsg('user', text);
-      if (attachFiles.length) userMsg.files = attachFiles;
-      const assistantMsg: ChatMessage = makeMsg('assistant');
-      assistantMsg.status = 'generating';
+    let placeholderSaved = resuming;
+    let acknowledgedSession: Session | undefined;
+    let receivedDone = false;
+    let acc = resuming ? assistant.content : '';
+    let failure = '';
+    const tools = new Map((resuming ? assistant.toolCalls || [] : []).map(tool => [tool.id, tool]));
+    const fallback = () => acc || (failure ? '⚠️ ' + failure : '本次生成未完成，请重试。');
+    const updateAnswer = (status: ChatMessage['status'], content = acc) => {
+      setSessions(previous => previous.map(item => item.id === id
+        ? { ...item, messages: item.messages.map(message => message.id === assistant.id
+          ? { ...message, content, status, toolCalls: [...tools.values()] }
+          : message) }
+        : item));
+    };
 
-      const isFirst = !current || current.messages.length === 0;
-
-      const nextSession: Session = {
-        ...current,
-        title: isFirst && !current.titleEdited ? firstLine(text) : current.title,
-        messages: [...(baseHistory ?? current.messages), userMsg, assistantMsg],
-        updatedAt: Date.now(),
-      };
-      const nextSessions = sessions.map(session => session.id === current.id ? nextSession : session);
-      onStart?.();
-      setSessions(nextSessions);
-
-      setStreaming(true);
-
-      const ac = new AbortController();
-      abortRef.current = ac;
-      const toolMap = new Map<string, ToolCallView>();
-      let acc = '';
-
-      try {
-        await saveCollection('sessions', nextSessions);
-        await flushCloudStore();
-        for await (const ev of streamChat(
-          baseHistory ? [...baseHistory, userMsg] : [...current!.messages, userMsg],
-          {
-          model: selectedModel,
-          customModel,
-          tavilyKey: getTavilyKey(accountId) || undefined,
-          signal: ac.signal,
-          knowledge: kbEnabled ? kbToText(kb, text) : '',
-          conversationId: current.id,
-          assistantMessageId: assistantMsg.id,
-        })) {
-          applyEvent(ev);
-        }
-      } catch (e) {
-        applyEvent({ type: 'error', message: (e as Error).message || '生成失败' });
-      } finally {
-        try {
-          const saved = await refreshConversation(current.id) as unknown as Session;
-          saved.messages = saved.messages.map(message => message.id === assistantMsg.id && message.status === 'generating'
-            ? { ...message, status: 'failed', content: message.content || '本次生成未完成，请核对模型授权与配置后重试。' } : message);
-          setSessions(previous => previous.map(session => session.id === current.id ? saved : session));
-        } catch (error) {
-          reportSyncError(error instanceof Error ? error.message : '无法确认对话保存状态');
-        }
-        setStreaming(false);
-        abortRef.current = null;
-      }
-
-      function applyEvent(ev: AgentEvent) {
-        switch (ev.type) {
+    try {
+      if (!resuming) await saveCollection('sessions', [session], false);
+      placeholderSaved = true;
+      controller.signal.throwIfAborted();
+      for await (const event of streamChat(history, {
+        model: resuming ? assistant.continuation?.model : selectedModel, customModel, signal: controller.signal,
+        tavilyKey: generation || onToken ? undefined : getTavilyKey(accountId) || undefined,
+        knowledge: kbEnabled && !generation?.documentTool ? kbToText(kb, userMessage.content) : '',
+        workflow: generation?.workflow, documentTool: generation?.documentTool,
+        conversationId: id, assistantMessageId: assistant.id,
+        resumeRevision,
+        onSaved: record => { if (record.id === id) acknowledgedSession = record.payload as unknown as Session; },
+      })) {
+        switch (event.type) {
           case 'token':
-            acc += ev.content;
-            updateCurrent((s) => ({
-              ...s,
-              messages: s.messages.map((m) =>
-                m.id === assistantMsg.id ? { ...m, content: acc } : m
-              ),
-            }));
+          case 'content':
+            acc = event.type === 'content' ? event.content : acc + event.content;
+            updateAnswer('generating');
+            onToken?.(acc);
             break;
-          case 'tool_start': {
-            const t: ToolCallView = {
-              id: ev.id,
-              name: ev.name,
-              arguments: ev.arguments,
-              status: 'running',
-            };
-            toolMap.set(ev.id, t);
-            updateCurrent((s) => ({
-              ...s,
-              messages: s.messages.map((m) =>
-                m.id === assistantMsg.id
-                  ? { ...m, toolCalls: [...(m.toolCalls || []), t] }
-                  : m
-              ),
-            }));
+          case 'tool_start':
+            tools.set(event.id, { id: event.id, name: event.name, arguments: event.arguments, status: 'running' });
+            updateAnswer('generating');
             break;
-          }
           case 'tool_end': {
-            const t = toolMap.get(ev.id);
-            if (t) {
-              t.status = 'done';
-              t.result = ev.result;
-              updateCurrent((s) => ({
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === assistantMsg.id
-                    ? { ...m, toolCalls: [...(m.toolCalls || []).filter((x) => x.id !== ev.id), t] }
-                    : m
-                ),
-              }));
-            }
+            const tool = tools.get(event.id);
+            if (tool) tools.set(event.id, { ...tool, status: 'done', result: event.result });
+            updateAnswer('generating');
             break;
           }
           case 'error':
-            if (acc.trim() === '') {
-              updateCurrent((s) => ({
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === assistantMsg.id ? { ...m, content: '⚠️ ' + ev.message } : m
-                ),
-              }));
-            }
+            failure = event.message;
+            if (!acc) updateAnswer('failed', fallback());
             break;
           case 'done':
-          default:
+            receivedDone = true;
             break;
         }
       }
-    },
-    [accountId, streaming, current, selectedModel, modelRequest, updateCurrent, kb, kbEnabled, sessions]
-  );
+    } catch (error) {
+      failure = controller.signal.aborted ? '已停止生成。'
+        : error instanceof Error ? error.message : '生成失败，请重试。';
+      updateAnswer(controller.signal.aborted ? 'interrupted' : 'failed', fallback());
+    } finally {
+      try {
+        if (placeholderSaved) {
+          const saved = receivedDone && acknowledgedSession
+            ? acknowledgedSession
+            : await refreshConversation(id) as unknown as Session;
+          const status = controller.signal.aborted ? 'interrupted' as const : 'failed' as const;
+          saved.messages = saved.messages.map(message => message.id === assistant.id && message.status === 'generating'
+            ? { ...message, status, content: acc || message.content || fallback(), toolCalls: [...tools.values()] } : message);
+          setSessions(previous => previous.map(item => item.id === id ? saved : item));
+        }
+      } catch (error) {
+        updateAnswer('interrupted', fallback());
+        reportSyncError(error instanceof Error ? error.message : '无法确认对话保存状态');
+      } finally {
+        generationJobs.current.delete(id);
+        setRunningIds(new Set(generationJobs.current.keys()));
+      }
+    }
+    if (failure) throw new Error(failure);
+    return acc;
+  }, [accountId, selectedModel, kb, kbEnabled]);
+
+  const submit = useCallback((
+    text: string, attachFiles: AttachedFile[], baseHistory?: ChatMessage[],
+    onStart?: () => void, generation?: ChatMessage['generation'],
+  ) => {
+    if ((!text.trim() && !attachFiles.length) || !current || generationJobs.current.has(current.id)) return;
+    if (!getPrivacy()) { showNote('当前禁止向模型外发资料，请在「账号与隐私」中查看并明确授权。'); return; }
+
+    let customModel;
+    try { customModel = modelRequest(); }
+    catch (error) { showNote((error as Error).message); return; }
+    const userMessage = makeMsg('user', text);
+    if (attachFiles.length) userMessage.files = attachFiles;
+    if (generation) userMessage.generation = generation;
+    const assistant: ChatMessage = { ...makeMsg('assistant'), status: 'generating' };
+    if (generation) assistant.exportName = current.title;
+    const nextSession: Session = {
+      ...current,
+      title: !current.messages.length && !current.titleEdited ? firstLine(text) : current.title,
+      messages: [...(baseHistory ?? current.messages), userMessage, assistant],
+      updatedAt: Date.now(),
+    };
+    onStart?.();
+    void runGeneration(nextSession, customModel).catch(() => { /* The reply shows generation errors. */ });
+  }, [current, modelRequest, runGeneration]);
 
   const handleSend = useCallback(() => {
-    const text = input.trim();
-    if ((!text && files.length === 0) || streaming) return;
-    void submit(text, files, undefined, () => {
-      setInput('');
-      setFiles([]);
-    });
-  }, [input, files, streaming, submit]);
+    submit(input.trim(), files, undefined, () => updateDraft(currentId, () => emptyDraft));
+  }, [currentId, input, files, submit, updateDraft]);
 
   const stop = useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
+    generationJobs.current.get(currentId)?.abort();
+  }, [currentId]);
+
+  function continueAnswer(assistantId: string) {
+    if (!current || generationJobs.current.has(current.id)) return;
+    const assistant = current.messages.at(-1);
+    if (assistant?.id !== assistantId || assistant.status !== 'interrupted' || !assistant.continuation) return;
+    if (!getPrivacy()) { showNote('请先在「账号与隐私」允许第三方模型处理资料。'); return; }
+    const revision = conversationRevision(current.id);
+    if (!revision) { showNote('请刷新对话，再继续生成。'); return; }
+    try {
+      const customModel = modelRequest(assistant.continuation.model);
+      setWorkbenchOpen(false); setWorkflow(null); setContractOpen(false);
+      void runGeneration(current, customModel, undefined, revision)
+        .catch(error => showNote(error instanceof Error ? error.message : '续写失败，请重试。'));
+    } catch (error) {
+      showNote(error instanceof Error ? error.message : '无法继续生成。');
+    }
+  }
 
   /** 重新生成：截断指定回答及之后的消息，基于其前一条用户消息再次提交。 */
-  const regenerate = useCallback(
-    (assistantId: string) => {
-      if (!current || streaming) return;
-      const msgs = current.messages;
-      const idx = msgs.findIndex((m) => m.id === assistantId);
-      if (idx < 1) return;
-      let userIdx = idx - 1;
-      while (userIdx >= 0 && msgs[userIdx].role !== 'user') userIdx--;
-      if (userIdx < 0) return;
-      const userMsg = msgs[userIdx];
-      if (!userMsg.content.trim()) return;
-      // submit 会把新用户消息拼在历史之后，这里只需取该提问之前的部分
-      const history = msgs.slice(0, userIdx);
-      submit(userMsg.content, userMsg.files || [], history);
-    },
-    [current, streaming, submit]
-  );
+  const regenerate = useCallback((assistantId: string) => {
+    if (!current || streaming) return;
+    const messages = current.messages;
+    const index = messages.findIndex(message => message.id === assistantId);
+    if (index < 1) return;
+    let userIndex = index - 1;
+    while (userIndex >= 0 && messages[userIndex].role !== 'user') userIndex--;
+    if (userIndex < 0) return;
+    const user = messages[userIndex];
+    submit(user.content, user.files || [], messages.slice(0, userIndex), undefined, user.generation);
+  }, [current, streaming, submit]);
 
   /** 编辑用户消息后原地重发：截断该条及之后的消息，用新内容重新提交。 */
-  const resendEdited = useCallback(
-    (msgId: string, newContent: string) => {
-      if (!current || streaming) return;
-      const text = newContent.trim();
-      if (!text) return;
-      const msgs = current.messages;
-      const idx = msgs.findIndex((m) => m.id === msgId);
-      if (idx < 0 || msgs[idx].role !== 'user') return;
-      const originalFiles = msgs[idx].files || [];
-      const history = msgs.slice(0, idx);
-      submit(text, originalFiles, history);
-    },
-    [current, streaming, submit]
-  );
+  const resendEdited = useCallback((msgId: string, newContent: string) => {
+    if (!current || streaming || !newContent.trim()) return;
+    const messages = current.messages;
+    const index = messages.findIndex(message => message.id === msgId && message.role === 'user');
+    if (index < 0) return;
+    const user = messages[index];
+    submit(newContent.trim(), user.files || [], messages.slice(0, index), undefined, user.generation);
+  }, [current, streaming, submit]);
 
-  /** 让助理基于当前模型/知识库生成一段纯文本（用于事务台）。 */
-  const generateText = useCallback(
-    async (prompt: string, onToken: (text: string) => void, workflow?: WorkbenchMode): Promise<string> => {
-      if (streaming) throw new Error('请等待当前生成结束。');
-      if (!getPrivacy()) throw new Error('当前禁止向模型外发资料，请先在账号与隐私中明确授权。');
-      const customModel = modelRequest();
-      const userMessage = makeMsg('user', prompt);
-      const assistantMessage = { ...makeMsg('assistant'), status: 'generating' as const };
-      const session: Session = { id: newSessionId(), title: firstLine(prompt), messages: [userMessage, assistantMessage], createdAt: Date.now(), updatedAt: Date.now() };
-      const nextSessions = [session, ...sessions];
-      setSessions(nextSessions); setStreaming(true);
-      const controller = new AbortController(); abortRef.current = controller;
-      let acc = '';
-      try {
-        await saveCollection('sessions', nextSessions); await flushCloudStore();
-        for await (const ev of streamChat([userMessage], {
-          model: selectedModel, customModel, signal: controller.signal,
-          knowledge: kbEnabled ? kbToText(kb, prompt) : '', workflow,
-          conversationId: session.id, assistantMessageId: assistantMessage.id,
-        })) {
-          if (ev.type === 'error') throw new Error(ev.message);
-          if (ev.type === 'token') { acc += ev.content; onToken(acc); }
-        }
-        return acc;
-      } finally {
-        try {
-          const saved = await refreshConversation(session.id) as unknown as Session;
-          saved.messages = saved.messages.map(message => message.id === assistantMessage.id && message.status === 'generating'
-            ? { ...message, status: 'failed', content: message.content || '本次生成未完成，请核对模型授权与配置后重试。' } : message);
-          setSessions(previous => previous.map(item => item.id === session.id ? saved : item));
-        } catch (error) { reportSyncError(error instanceof Error ? error.message : '无法确认保存状态'); }
-        setStreaming(false); abortRef.current = null;
-      }
-    },
-    [selectedModel, modelRequest, kb, kbEnabled, sessions, streaming]
-  );
+  const generateText = useCallback<WorkbenchGenerate>((prompt, onToken, options) => {
+    if (!getPrivacy()) throw new Error('当前禁止向模型外发资料，请先在账号与隐私中明确授权。');
+    const customModel = modelRequest();
+    const user = makeMsg('user', prompt);
+    if (options?.files?.length) user.files = options.files;
+    if (options?.workflow || options?.documentTool) {
+      user.generation = { workflow: options.workflow, documentTool: options.documentTool };
+    }
+    const title = options?.title || firstLine(prompt);
+    const assistant: ChatMessage = { ...makeMsg('assistant'), status: 'generating' };
+    if (options) assistant.exportName = title;
+    const now = Date.now();
+    const session: Session = { id: newSessionId(), title, messages: [user, assistant], createdAt: now, updatedAt: now };
+    setCurrentId(session.id);
+    setProjectViewId(null);
+    return runGeneration(session, customModel, onToken);
+  }, [modelRequest, runGeneration]);
+
+  const latestReply = current?.messages.at(-1);
+  const continueCurrentReply = !streaming && latestReply?.status === 'interrupted' && latestReply.continuation
+    ? () => continueAnswer(latestReply.id)
+    : undefined;
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-background">
@@ -565,17 +568,17 @@ export default function Index() {
         onDeleteProject={deleteProject}
         onOpenProject={openProject}
         right={appearance.sidebarSide === 'right'}
-        footer={<AccountControls disabled={streaming} appearance={appearance} onAppearanceChange={setAppearance}
+        footer={<AccountControls disabled={runningIds.size > 0} appearance={appearance} onAppearanceChange={setAppearance}
           searchConfigured={searchConfigured} onSearchKeyChange={setSearchConfigured} />}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-        disabled={workspaceBusy}
+        runningIds={runningIds}
       />
       <main className={`flex min-w-0 flex-1 flex-col ${appearance.sidebarSide === 'right' ? 'order-1' : 'order-2'}`}>
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-5 py-3">
           {!sidebarOpen && <button type="button" onClick={() => setSidebarOpen(true)} aria-label="展开侧边栏" className="mr-1 rounded-lg p-1.5 text-muted-foreground hover:bg-muted"><PanelLeftOpen className="h-4 w-4" /></button>}
           <span className="text-sm font-semibold">小知</span>
-          {currentProject && <><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button type="button" disabled={workspaceBusy} onClick={() => openProject(currentProject.id)} className="max-w-40 truncate rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-muted">{currentProject.name}</button></>}
+          {currentProject && <><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button type="button" onClick={() => openProject(currentProject.id)} className="max-w-40 truncate rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-muted">{currentProject.name}</button></>}
           <span className="text-[0.72rem] text-muted-foreground">知识产权办案助理</span>
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.7rem] text-primary">
             私人云端空间
@@ -609,11 +612,14 @@ export default function Index() {
             </div>
           )}
           {current && !viewedProject && current.messages.length > 0 ? (
-            <MessageList key={current.id} messages={current.messages} avatar={appearance.avatar} onResend={resendEdited} onRegenerate={regenerate} />
+            <MessageList key={current.id} messages={current.messages} avatar={appearance.avatar}
+              streaming={streaming} onContinue={continueCurrentReply}
+              onResend={streaming ? undefined : resendEdited} onRegenerate={streaming ? undefined : regenerate} />
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {viewedProject
-                ? <ProjectOverview project={viewedProject} sessions={sessions.filter(session => session.projectId === viewedProject.id)} onNew={() => newChat(viewedProject.id)} onSelect={selectConversation} disabled={workspaceBusy} />
+                ? <ProjectOverview project={viewedProject} sessions={sessions.filter(session => session.projectId === viewedProject.id)}
+                    onNew={() => newChat(viewedProject.id)} onSelect={selectConversation} runningIds={runningIds} />
                 : <EmptyState onPick={setInput} avatar={appearance.avatar} />}
             </div>
           )}
@@ -628,7 +634,7 @@ export default function Index() {
           files={files}
           onRemoveFile={removeFile}
           streaming={streaming}
-          disabled={streaming || !current}
+          disabled={!current}
           onWorkflow={setWorkflow}
           onWorkflowUpload={() => setUploadOpen(true)}
           onOpenContract={() => setContractOpen(true)}
@@ -662,6 +668,8 @@ export default function Index() {
         open={workbenchOpen || !!workflow}
         onClose={() => { setWorkbenchOpen(false); setWorkflow(null); }}
         onGenerate={generateText}
+        generating={streaming}
+        onContinue={continueCurrentReply}
         searchConfigured={searchConfigured}
         onSearchNews={async signal => {
           const key = getTavilyKey(accountId);
@@ -670,7 +678,7 @@ export default function Index() {
         }}
       />
 
-      <ContractPanel open={contractOpen} onClose={() => setContractOpen(false)} onGenerate={generateText} disabled={streaming} />
+      <ContractPanel open={contractOpen} onClose={() => setContractOpen(false)} onGenerate={generateText} onContinue={continueCurrentReply} />
       {customSettingsOpen && (
         <CustomModelSettings accountId={accountId} models={customModels} onClose={() => setCustomSettingsOpen(false)} onSave={saveModel} onDelete={deleteModel} />
       )}

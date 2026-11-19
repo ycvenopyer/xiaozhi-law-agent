@@ -1,13 +1,20 @@
-import type { AgentEvent, AttachedFile, ChatMessage } from '@/types/agent';
+import type { AgentEvent, AttachedFile, ChatMessage, GenerationOptions } from '@/types/agent';
 import { authHeaders } from './cloudbase';
 import { acceptRecord, type CloudRecord } from './cloud-store';
 import { imageDataUrl, storeOriginal } from './private-files';
 import type { CustomModelRequest } from './custom-models';
+import type { DocumentTool } from '../../../shared/document-tools.mjs';
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 
 export type WorkbenchMode = 'compare' | 'infringement' | 'compliance' | 'draft';
+
+export type WorkbenchGenerate = (
+  prompt: string,
+  onToken: (text: string) => void,
+  options?: GenerationOptions & { files?: AttachedFile[]; title?: string },
+) => Promise<string>;
 
 export interface IpNews {
   date: string;
@@ -46,15 +53,19 @@ export async function* streamChat(
     knowledge?: string;
     tavilyKey?: string;
     workflow?: WorkbenchMode;
+    documentTool?: DocumentTool;
     customModel?: CustomModelRequest;
     conversationId?: string;
     assistantMessageId?: string;
+    resumeRevision?: number;
+    onSaved?: (record: CloudRecord) => void;
   }
 ): AsyncGenerator<AgentEvent> {
   // Only send what the LLM needs: role + text content (including any attached
   // document text) and image data URLs for vision input. Tool calls/results are
   // handled server-side, so we strip them.
-  const payload = await Promise.all(messages
+  const history = opts?.documentTool ? messages.slice(-1) : messages;
+  const payload = await Promise.all(history
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map(async (m) => {
       let content = m.content;
@@ -62,35 +73,34 @@ export async function* streamChat(
       if (m.files && m.files.length) {
         const docs = m.files
           .filter((f) => f.kind !== 'image')
-          .map((f) => `\n\n【附带的文档：${f.name}】\n${f.text}\n【文档结束】`)
-          .join('');
+          .map((f) => opts?.documentTool ? f.text : `\n\n【附带的文档：${f.name}】\n${f.text}\n【文档结束】`)
+          .join('\n\n');
         const imgs = m.files.filter((f) => f.kind === 'image');
         for (const f of imgs) images.push(await imageDataUrl(f));
         content = docs
           ? content
             ? content + docs
-            : '请根据以下文档回答问题：' + docs
+            : opts?.documentTool ? docs : '请根据以下文档回答问题：' + docs
           : content;
       }
       return images.length ? { role: m.role, content, images } : { role: m.role, content };
     }));
 
-  const request = { messages: payload, model: opts?.model, workflow: opts?.workflow, knowledge: opts?.knowledge,
-    tavilyKey: opts?.tavilyKey, customModel: opts?.customModel, conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId };
-  let resumeRevision: number | undefined;
-  do {
-    const body = serializeRequest({ ...request, allowResume: !opts?.workflow, resumeRevision });
-    resumeRevision = undefined;
-    for await (const event of readChatSegment(body, opts?.signal)) {
-      if (event.type === 'resume') resumeRevision = event.revision;
-      else if (!(resumeRevision && event.type === 'done')) yield event;
-    }
-  } while (resumeRevision && !opts?.signal?.aborted);
+  const body = serializeRequest({
+    messages: payload, model: opts?.model, workflow: opts?.workflow, documentTool: opts?.documentTool,
+    knowledge: opts?.knowledge, tavilyKey: opts?.tavilyKey, customModel: opts?.customModel,
+    conversationId: opts?.conversationId, assistantMessageId: opts?.assistantMessageId,
+    manualContinuation: true, resumeRevision: opts?.resumeRevision,
+  });
+  for await (const event of readChatSegment(body, opts?.signal, opts?.onSaved)) {
+    if (event.type !== 'resume') yield event;
+  }
 }
 
 type SegmentEvent = AgentEvent | { type: 'resume'; revision: number };
 
-async function* readChatSegment(body: string, signal?: AbortSignal): AsyncGenerator<SegmentEvent> {
+async function* readChatSegment(body: string, signal?: AbortSignal,
+  onSaved?: (record: CloudRecord) => void): AsyncGenerator<SegmentEvent> {
 
   const res = await fetch('/api/agent/chat', {
     method: 'POST',
@@ -128,8 +138,10 @@ async function* readChatSegment(body: string, signal?: AbortSignal): AsyncGenera
       if (!data) continue;
       try {
         const event = JSON.parse(data) as SegmentEvent | { type: 'saved'; record: CloudRecord };
-        if (event.type === 'saved') acceptRecord(event.record);
-        else yield event;
+        if (event.type === 'saved') {
+          acceptRecord(event.record);
+          onSaved?.(event.record);
+        } else yield event;
       } catch {
         /* ignore partial frames */
       }

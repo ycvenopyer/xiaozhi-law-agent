@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft, ArrowUpRight, Bot, ChevronDown, Eye, EyeOff, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { getModelKey, testCustomModel, type CustomModel } from '@/lib/custom-models';
-import { modelPresets } from '@/lib/model-presets';
+import { findPresetModel, modelPresets } from '@/lib/model-presets';
 
 const field = 'h-10 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/15';
 const button = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50';
@@ -10,7 +10,7 @@ const defaultPreset = modelPresets[0];
 const presetFor = (model: CustomModel | null) => modelPresets.find(preset => preset.name === model?.provider && preset.url === model.baseUrl);
 const emptyModel = (): CustomModel => ({
   id: `custom-${crypto.randomUUID()}`, provider: defaultPreset.name, baseUrl: defaultPreset.url,
-  model: defaultPreset.models[0], label: '', vision: false, tools: false,
+  model: defaultPreset.defaultModel.id, label: '', vision: !!defaultPreset.defaultModel.vision, tools: false,
 });
 
 interface Props {
@@ -38,7 +38,7 @@ export function CustomModelSettings({ accountId, models, onClose, onSave, onDele
     const matched = presetFor(model);
     setDraft(model);
     setPresetName(matched?.name || '');
-    setManualId(Boolean(model && matched && !matched.models.includes(model.model)));
+    setManualId(Boolean(model && matched && !findPresetModel(matched, model.model)));
     setApiKey('');
     setShowKey(false);
     setNotice('');
@@ -46,7 +46,7 @@ export function CustomModelSettings({ accountId, models, onClose, onSave, onDele
   }
 
   function chooseModel(id: string) {
-    update({ model: id, vision: id === 'glm-4.6v-flash' && presetName === defaultPreset.name, tools: false });
+    update({ model: id, vision: !!findPresetModel(preset, id)?.vision, tools: false });
   }
 
   function chooseProvider(name: string) {
@@ -55,7 +55,8 @@ export function CustomModelSettings({ accountId, models, onClose, onSave, onDele
     setManualId(false);
     setApiKey('');
     setShowKey(false);
-    update({ provider: next?.name || '', baseUrl: next?.url || '', model: next?.models[0] || '', label: '', vision: false, tools: false });
+    update({ provider: next?.name || '', baseUrl: next?.url || '', model: next?.defaultModel.id || '', label: '',
+      vision: !!next?.defaultModel.vision, tools: false });
   }
 
   function update(patch: Partial<CustomModel>) {
@@ -68,7 +69,8 @@ export function CustomModelSettings({ accountId, models, onClose, onSave, onDele
     if (!draft) throw new Error('请先添加模型。');
     const model = {
       ...draft, provider: draft.provider.trim(), model: draft.model.trim(),
-      label: draft.label.trim() || draft.model.trim(), baseUrl: draft.baseUrl.trim(),
+      label: draft.label.trim() || findPresetModel(preset, draft.model.trim())?.label || draft.model.trim(),
+      baseUrl: draft.baseUrl.trim(),
     };
     let url: URL;
     try { url = new URL(model.baseUrl); }
@@ -164,8 +166,11 @@ export function CustomModelSettings({ accountId, models, onClose, onSave, onDele
                 {preset && <select id="model-choice" className={field} value={manualId ? '' : draft.model} onChange={event => {
                   setManualId(!event.target.value);
                   if (event.target.value) chooseModel(event.target.value);
+                  else update({ vision: false, tools: false });
                 }}>
-                  {preset.models.map(id => <option key={id} value={id}>{id}</option>)}
+                  {preset.groups.map(group => <optgroup key={group.label} label={group.label}>
+                    {group.models.map(model => <option key={model.id} value={model.id}>{model.label} · {model.id}</option>)}
+                  </optgroup>)}
                   <option value="">手动输入模型 ID</option>
                 </select>}
                 {(!preset || manualId) && <input id="model-id" aria-label="模型 ID" className={field} value={draft.model} required maxLength={200} placeholder="输入供应商提供的模型 ID" onChange={event => update({ model: event.target.value })} />}
@@ -176,7 +181,8 @@ export function CustomModelSettings({ accountId, models, onClose, onSave, onDele
                 </summary>
                 <div className="space-y-3 px-1 pb-2 pt-3">
                   {preset && <label className="block space-y-2 text-sm">Base URL<input className={field} value={draft.baseUrl} type="url" maxLength={500} onChange={event => update({ baseUrl: event.target.value })} /></label>}
-                  <label className="block space-y-2 text-sm">显示名称<input className={field} value={draft.label} maxLength={80} placeholder="默认使用模型 ID" onChange={event => update({ label: event.target.value })} /></label>
+                  <label className="block space-y-2 text-sm">显示名称<input className={field} value={draft.label} maxLength={80}
+                    placeholder={findPresetModel(preset, draft.model)?.label || '默认使用模型 ID'} onChange={event => update({ label: event.target.value })} /></label>
                   <div className="flex flex-wrap gap-x-5 gap-y-2">
                     <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.vision} onChange={event => update({ vision: event.target.checked })} />支持图片输入</label>
                     <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.tools} onChange={event => update({ tools: event.target.checked })} />支持工具调用</label>

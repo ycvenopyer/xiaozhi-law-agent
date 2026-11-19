@@ -43,6 +43,7 @@ export interface ToolDefinition {
 /** Events pushed to the browser over the SSE stream. */
 export type AgentEvent =
   | { type: 'token'; content: string }
+  | { type: 'content'; content: string }
   | { type: 'tool_start'; id: string; name: string; arguments: string }
   | { type: 'tool_end'; id: string; name: string; result: string }
   | { type: 'done' }

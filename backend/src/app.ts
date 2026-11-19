@@ -19,9 +19,19 @@ import { usernameLogin } from './modules/username-login'
 // import { productRouter } from './modules/product.js'
 
 export const createApp = (
-  { serveFrontend = true }: { serveFrontend?: boolean } = {}
+  { serveFrontend = true, requestTimeoutMs }: {
+    serveFrontend?: boolean
+    requestTimeoutMs?: number
+  } = {}
 ): Application => {
   const app = express()
+
+  if (requestTimeoutMs !== undefined) {
+    app.use((_req, res, next) => {
+      res.locals.requestDeadline = performance.now() + requestTimeoutMs
+      next()
+    })
+  }
 
   // HTTP request logging
   app.use(httpLogger)

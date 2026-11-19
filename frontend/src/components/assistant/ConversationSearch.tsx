@@ -8,12 +8,11 @@ interface Props {
   projects: Project[];
   onSelect: (id: string) => void;
   onClose: () => void;
-  disabled: boolean;
 }
 
 const normalize = (text: string) => text.normalize('NFKC').toLowerCase();
 
-export function ConversationSearch({ sessions, projects, onSelect, onClose, disabled }: Props) {
+export function ConversationSearch({ sessions, projects, onSelect, onClose }: Props) {
   const [query, setQuery] = useState('');
   const deferredQuery = useDeferredValue(query);
   const term = normalize(deferredQuery.trim());
@@ -37,14 +36,14 @@ export function ConversationSearch({ sessions, projects, onSelect, onClose, disa
           <Search className="size-4 shrink-0 text-muted-foreground" />
           <input type="search" autoFocus aria-label="搜索关键词" placeholder="输入关键词…" value={query}
             onChange={event => setQuery(event.target.value)} onKeyDown={event => {
-              if (event.key === 'Enter' && query === deferredQuery && results[0] && !disabled) onSelect(results[0].session.id);
+              if (event.key === 'Enter' && query === deferredQuery && results[0]) onSelect(results[0].session.id);
             }} className="min-w-0 flex-1 bg-transparent py-3 text-sm outline-none" />
         </label>
         <div className="min-h-0 overflow-y-auto overscroll-contain">
           <p role="status" className="px-2 pb-2 text-xs text-muted-foreground">{term ? `${results.length} 条匹配` : '最近对话'}</p>
           {results.length ? results.slice(0, 50).map(({ session, snippet, project }) => (
-            <button key={session.id} type="button" disabled={disabled} onClick={() => onSelect(session.id)}
-              className="group flex w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2.5 text-left hover:bg-muted focus-visible:bg-muted disabled:opacity-50">
+            <button key={session.id} type="button" onClick={() => onSelect(session.id)}
+              className="group flex w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2.5 text-left hover:bg-muted focus-visible:bg-muted">
               <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">{session.title}</span>

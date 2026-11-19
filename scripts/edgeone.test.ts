@@ -60,6 +60,7 @@ globalThis.fetch = async (url, init) => {
     if (body.p_id !== 'conversation-a') return json({ code: '40001' }, 409)
     return json(record)
   }
+  if (address.endsWith('/rpc/read_public_knowledge')) return json([])
   if (address.endsWith('/rpc/finish_chat')) {
     const body = JSON.parse(String(init?.body))
     record = { ...record, payload: body.p_payload, revision: record.revision + 1 }
@@ -95,6 +96,55 @@ globalThis.fetch = async (url, init) => {
     assert.ok(!JSON.stringify(body).includes('synthetic-tavily-key'))
     const last = body.messages.at(-1)
     const frame = (choice: unknown) => new Response('data: ' + JSON.stringify({ choices: [choice] }) + '\n\ndata: [DONE]\n\n')
+    const system = body.messages[0].content as string
+    if (last.content.includes('timeout draft fixture')) {
+      assert.match(system, /首先输出 document 字段/)
+      const { previousDraft } = JSON.parse(last.content)
+      if (previousDraft) {
+        assert.match(previousDraft.document, /第一条 双方约定保密。/)
+        return frame({ delta: { content: JSON.stringify({ document: '保密期限为两年。', risk: '无法判断',
+          conclusion: '部分条款待确认。', analysis: '还需要核对例外情形。', references: [],
+          questions: ['是否设定保密例外？'], actions: ['核对保密期限。'], hasMore: false }) } })
+      }
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+          choices: [{ delta: { content: '{"document":"# 保密协议\\n\\n第一条 双方约定保密。\\n第二条 ' } }],
+        }) + '\n\n'))
+        init?.signal?.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true })
+      } }))
+    }
+    if (last.content.includes('segment draft fixture')) {
+      return frame({ delta: { content: JSON.stringify({ document: '第一段合同正文。', hasMore: true }) } })
+    }
+    if (last.content.includes('研发合规清单')) {
+      assert.match(system, /责任|负责岗位/)
+      return frame({ delta: { content: JSON.stringify({ document: '按阶段整理待核实风险。', risk: '无法判断',
+        conclusion: '材料待核实。', analysis: '已勾选立项。', references: [],
+        questions: ['负责岗位是谁？'], actions: ['记录核对结果。'] }) } })
+    }
+    if (system.includes('你负责从判决书')) {
+      const { document } = JSON.parse(last.content)
+      assert.match(document, /甲诉乙。/)
+      return frame({ delta: { content: JSON.stringify({
+        parties: [{ value: '原告甲、被告乙', excerpt: '甲诉乙。' }],
+        caseNumbers: [], holdings: [],
+        compensation: [{ value: '判赔 999 元', excerpt: '判赔 20 元。' }],
+        citedLaws: [{ value: '虚构法条', excerpt: '不存在的引文。' }],
+        timeline: [], obligations: [],
+      }) } })
+    }
+    if (system.includes('你是知识产权与法务文书的翻译员')) {
+      assert.match(system, /英语/)
+      assert.match(system, /权利要求书.* → claims/)
+      const translation = JSON.parse(last.content)
+      if (translation.source === '译文续写测试') {
+        if (!translation.translatedPrefix) return frame({ delta: { content: 'The claims' }, finish_reason: 'length' })
+        assert.equal(translation.translatedPrefix, 'The claims')
+        return frame({ delta: { content: 'The claims define the scope.' }, finish_reason: 'stop' })
+      }
+      assert.deepEqual(translation, { source: '权利要求书' })
+      return frame({ delta: { content: 'Claims' } })
+    }
     if (last.content === 'prefill sample') return frame({delta:{content: JSON.stringify({task:'保密协议（NDA）',values:{'当事人及角色':'甲方','未定义字段':'忽略'}})}})
     if (last.content === 'search fixture') {
       assert.ok(body.tools.some((tool: { function: { name: string } }) => tool.function.name === 'web_search'))
@@ -111,7 +161,8 @@ globalThis.fetch = async (url, init) => {
         init?.signal?.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true })
       } }))
     }
-    assert.ok((body.tools || []).every((tool: { function: { name: string } }) => ['calculator', 'get_datetime'].includes(tool.function.name)))
+    assert.ok((body.tools || []).every((tool: { function: { name: string } }) =>
+      ['calculator', 'get_datetime', 'file_parse', 'professional_translate'].includes(tool.function.name)))
     if (blockModel) return new Promise((_resolve, reject) => {
       const abort = () => reject(new Error('aborted'))
       if (init?.signal?.aborted) abort()
@@ -281,13 +332,28 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
       assert.equal(savedStatus, 'failed')
       streamError = false
     })
-    await t.test('deadline aborts upstream and persists failed generation', async () => {
+    await t.test('deadline counts request setup time, aborts upstream, and persists failed generation', async t => {
       blockModel = true; record = makeRecord()
+      let now = 0
+      t.mock.method(performance, 'now', () => now)
+      const fetchFixture = globalThis.fetch
+      t.mock.method(globalThis, 'fetch', (url: RequestInfo | URL, init?: RequestInit) => {
+        if (String(url).endsWith('/rpc/begin_chat')) now += 5000
+        return fetchFixture(url, init)
+      })
       const originalTimeout = globalThis.setTimeout
-      globalThis.setTimeout = ((fn, ms, ...args) => originalTimeout(fn, ms === 100_000 ? 20 : ms, ...args)) as typeof setTimeout
+      let generationTimeMs: number | undefined
+      globalThis.setTimeout = ((fn, ms, ...args) => {
+        if (ms !== undefined && ms >= 90_000 && ms <= 120_000) {
+          generationTimeMs = ms
+          return originalTimeout(fn, 20, ...args)
+        }
+        return originalTimeout(fn, ms, ...args)
+      }) as typeof setTimeout
       try {
         const result = await request(app).post('/api/agent/chat').set(auth).send(input).expect(200)
-        assert.match(result.text, /100 秒/)
+        assert.equal(generationTimeMs, 99_000)
+        assert.match(result.text, /本段暂未收到正文/)
         assert.equal(savedStatus, 'failed')
       } finally { globalThis.setTimeout = originalTimeout; blockModel = false }
     })
@@ -299,26 +365,125 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
       assert.doesNotMatch(res.text, /synthetic-tavily-key/)
       assert.equal(record.payload.messages.at(-1)?.content, 'found')
     })
+    await t.test('timed-out drafts stream and save a checkpoint, then continue the same reply', async t => {
+      t.mock.method(performance, 'now', () => 0)
+      const realTimeout = globalThis.setTimeout
+      t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => realTimeout(fn, ms === 104_000 ? 25 : ms, ...args))
+      record = makeRecord()
+      const body = { ...input, workflow: 'draft', manualContinuation: true,
+        messages: [{ role: 'user', content: 'timeout draft fixture' }] }
+      const result = await request(app).post('/api/agent/chat').set(auth).send(body).expect(200)
+      const events = result.text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+      const draft = events.find(event => event.type === 'content')?.content || ''
+      assert.match(draft, /尚未完成核验/)
+      assert.match(draft, /第一条 双方约定保密。/)
+      assert.doesNotMatch(draft, /超过 100 秒/)
+      assert.equal(record.payload.messages.at(-1)?.content, draft)
+      assert.equal(savedStatus, 'interrupted')
+      assert.ok(events.findIndex(event => event.type === 'content') < events.findIndex(event => event.type === 'saved'))
+      const revision = record.revision
+      await request(app).post('/api/agent/chat').set(auth).send({ ...body, resumeRevision: revision - 1 }).expect(400)
+      assert.equal(record.payload.messages.at(-1)?.content, draft)
+      assert.equal(savedStatus, 'interrupted')
+      await request(app).post('/api/agent/chat').set(auth).send({ ...body, resumeRevision: record.revision }).expect(200)
+      const final = record.payload.messages.at(-1)!
+      assert.equal(final.id, input.assistantMessageId)
+      assert.match(final.content, /第一条 双方约定保密。\n第二条 保密期限为两年。/)
+      assert.equal(final.content.match(/第一条/g)?.length, 1)
+      assert.doesNotMatch(final.content, /尚未完成核验/)
+      assert.ok(!('continuation' in final))
+      assert.equal(savedStatus, 'complete')
+    })
+    await t.test('a deliberately short draft segment can pause before the time limit', async () => {
+      record = makeRecord()
+      const response = await request(app).post('/api/agent/chat').set(auth).send({ ...input, workflow: 'draft',
+        manualContinuation: true, messages: [{ role: 'user', content: 'segment draft fixture' }] }).expect(200)
+      assert.match(response.text, /第一段合同正文。/)
+      assert.match(response.text, /"continuation":/)
+      assert.equal(savedStatus, 'interrupted')
+    })
+    await t.test('checklist generation saves the compliance draft in the conversation', async () => {
+      record = makeRecord()
+      const result = await request(app).post('/api/agent/chat').set(auth).send({ ...input, workflow: 'compliance',
+        messages: [{ role: 'user', content: '研发合规清单\n立项已勾选' }] }).expect(200)
+      assert.match(result.text, /合规提示初稿/)
+      assert.match(record.payload.messages.at(-1)?.content || '', /按阶段整理待核实风险/)
+      assert.equal(savedStatus, 'complete')
+    })
+    await t.test('document tools use grounded excerpts and the patent glossary', async () => {
+      const tools = availableTools().map(tool => tool.function.name)
+      for (const [documentTool, content, expected] of [
+        [{ name: 'file_parse' }, '甲诉乙。判赔 20 元。', /原告甲、被告乙/],
+        [{ name: 'professional_translate', targetLanguage: 'en' }, '权利要求书', /Claims/],
+      ] as const) {
+        assert.ok(tools.includes(documentTool.name))
+        record = makeRecord()
+        const response = await request(app).post('/api/agent/chat').set(auth).send({ ...input, documentTool,
+          messages: [{ role: 'user', content }] }).expect(200)
+        assert.match(response.text, expected)
+        assert.doesNotMatch(response.text, /999 元|虚构法条/)
+        assert.match(record.payload.messages.at(-1)?.content || '', expected)
+        assert.equal(savedStatus, 'complete')
+      }
+    })
+    await t.test('a partial translation continues its source segment without duplicating the prefix', async () => {
+      record = makeRecord()
+      const body = { ...input, manualContinuation: true, documentTool: { name: 'professional_translate', targetLanguage: 'en' },
+        messages: [{ role: 'user', content: '译文续写测试' }] }
+      await request(app).post('/api/agent/chat').set(auth).send(body).expect(200)
+      assert.equal(record.payload.messages.at(-1)?.content, 'The claims')
+      assert.equal(savedStatus, 'interrupted')
+      await request(app).post('/api/agent/chat').set(auth).send({ ...body, resumeRevision: record.revision }).expect(200)
+      assert.equal(record.payload.messages.at(-1)?.content, 'The claims define the scope.')
+      assert.equal(savedStatus, 'complete')
+    })
     await t.test('length cutoff continues in the same saved reply', async () => {
       record = makeRecord()
       await request(app).post('/api/agent/chat').set(auth).send({ ...input, messages: [{ role: 'user', content: 'length fixture' }] }).expect(200)
       assert.equal(record.payload.messages.at(-1)?.content, '第一段hello')
       assert.equal(savedStatus, 'complete')
     })
-    await t.test('a timed-out partial answer resumes after persistence', async () => {
+    await t.test('a timed-out partial answer resumes after persistence', async t => {
+      t.mock.method(performance, 'now', () => 0)
       record = makeRecord()
       const body = { ...input, messages: [{ role: 'user', content: 'deadline fixture' }], allowResume: true }
       const originalTimeout = globalThis.setTimeout
       blockModel = true
-      globalThis.setTimeout = ((fn, ms, ...args) => originalTimeout(fn, ms === 100_000 ? 30 : ms, ...args)) as typeof setTimeout
+      let generationTimeMs: number | undefined
+      globalThis.setTimeout = ((fn, ms, ...args) => {
+        if (ms !== undefined && ms >= 90_000 && ms <= 120_000) {
+          generationTimeMs = ms
+          return originalTimeout(fn, 30, ...args)
+        }
+        return originalTimeout(fn, ms, ...args)
+      }) as typeof setTimeout
       try {
         const res = await request(app).post('/api/agent/chat').set(auth).send(body).expect(200)
+        assert.equal(generationTimeMs, 104_000)
         assert.match(res.text, /"type":"resume"/)
         assert.equal(savedStatus, 'interrupted')
       } finally { globalThis.setTimeout = originalTimeout; blockModel = false }
       await request(app).post('/api/agent/chat').set(auth).send({ ...body, resumeRevision: record.revision }).expect(200)
       assert.equal(savedStatus, 'complete')
       assert.equal(record.payload.messages.at(-1)?.content, '前段hello')
+    })
+    await t.test('manual chat retries an empty segment in the same reply', async t => {
+      t.mock.method(performance, 'now', () => 0)
+      const realTimeout = globalThis.setTimeout
+      t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => realTimeout(fn, ms === 104_000 ? 25 : ms, ...args))
+      const body = { ...input, manualContinuation: true }
+      record = makeRecord()
+      blockModel = true
+      try {
+        const result = await request(app).post('/api/agent/chat').set(auth).send(body).expect(200)
+        assert.match(result.text, /"continuation":/)
+        assert.doesNotMatch(result.text, /"type":"resume"/)
+        assert.equal(record.payload.messages.at(-1)?.content, '')
+        assert.equal(savedStatus, 'interrupted')
+      } finally { blockModel = false }
+      await request(app).post('/api/agent/chat').set(auth).send({ ...body, resumeRevision: record.revision }).expect(200)
+      assert.equal(record.payload.messages.at(-1)?.content, 'hello')
+      assert.equal(savedStatus, 'complete')
     })
     await t.test('file prefill checks consent, vision and allowed fields', async () => {
       const body = { model: 'zhipu-glm', mode: 'draft', text: 'prefill sample', images: [] }

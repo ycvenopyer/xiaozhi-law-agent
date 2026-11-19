@@ -6,11 +6,13 @@ import { MessageBubble } from './MessageBubble';
 interface MessageListProps {
   messages: ChatMessage[];
   avatar?: string;
+  streaming?: boolean;
+  onContinue?: () => void;
   onResend?: (messageId: string, content: string) => void;
   onRegenerate?: (messageId: string) => void;
 }
 
-export function MessageList({ messages, avatar, onResend, onRegenerate }: MessageListProps) {
+export function MessageList({ messages, avatar, streaming, onContinue, onResend, onRegenerate }: MessageListProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -43,8 +45,9 @@ export function MessageList({ messages, avatar, onResend, onRegenerate }: Messag
       <div ref={scroller} aria-label="对话消息" tabIndex={0} onScroll={updateScrollState}
         className="h-full overflow-x-hidden overflow-y-auto overscroll-contain outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
         <div ref={content} className="mx-auto w-full max-w-[var(--chat-max-width)] space-y-5 px-4 pb-12 pt-6">
-          {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} avatar={avatar} onResend={onResend} onRegenerate={onRegenerate} />
+          {messages.map((m, index) => (
+            <MessageBubble key={m.id} message={m} avatar={avatar} onResend={onResend} onRegenerate={onRegenerate}
+              streaming={streaming && index === messages.length - 1} onContinue={index === messages.length - 1 ? onContinue : undefined} />
           ))}
         </div>
       </div>

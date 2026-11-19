@@ -1,4 +1,9 @@
+import type { DocumentTool } from '../../../shared/document-tools.mjs';
+import type { WorkflowMode } from '../../../shared/workflow-fields.mjs';
+
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
+
+export type GenerationOptions = { workflow?: WorkflowMode; documentTool?: DocumentTool };
 
 export interface ModelInfo {
   id: string;
@@ -39,6 +44,9 @@ export interface ChatMessage {
   content: string;
   toolCalls?: ToolCallView[];
   files?: AttachedFile[];
+  generation?: GenerationOptions;
+  continuation?: { model: string };
+  exportName?: string;
   createdAt: number;
   status?: 'generating' | 'complete' | 'failed' | 'interrupted';
 }
@@ -78,6 +86,7 @@ export interface CaseDossier {
 
 export type AgentEvent =
   | { type: 'token'; content: string }
+  | { type: 'content'; content: string }
   | { type: 'tool_start'; id: string; name: string; arguments: string }
   | { type: 'tool_end'; id: string; name: string; result: string }
   | { type: 'done' }
@@ -85,6 +94,8 @@ export type AgentEvent =
 
 /** Friendly metadata for each built-in tool. */
 export const TOOL_META: Record<string, { label: string; icon: string; tone: string }> = {
+  file_parse: { label: '文档解析', icon: 'FileText', tone: 'text-primary' },
+  professional_translate: { label: '专业翻译', icon: 'Languages', tone: 'text-primary' },
   web_search: { label: '联网搜索', icon: 'Search', tone: 'text-primary' },
   calculator: { label: '计算', icon: 'Calculator', tone: 'text-emerald-600 dark:text-emerald-400' },
   get_datetime: { label: '时间', icon: 'Clock', tone: 'text-sky-600 dark:text-sky-400' },

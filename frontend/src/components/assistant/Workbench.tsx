@@ -3,20 +3,23 @@ import {
   ClipboardList,
   FileText,
   X,
-  Copy,
-  Check,
   Loader2,
   Newspaper,
   ArrowUpRight,
   Search,
+  ScanText,
+  Languages,
 } from 'lucide-react';
 import { IpWorkflow, workflowNames } from './IpWorkflow';
+import { DocumentToolPanel } from './DocumentToolPanel';
+import { ReportPreview } from './ReportPreview';
+import { enterpriseDraftPrompt, enterpriseDrafts } from '@/lib/enterprise-drafts';
 import type { KBEntry } from '@/lib/knowledge';
-import type { IpNews, WorkbenchMode } from '@/lib/agent-client';
+import type { IpNews, WorkbenchGenerate, WorkbenchMode } from '@/lib/agent-client';
 
 import type { WorkflowPrefill } from '../../../../shared/workflow-fields.mjs';
 
-type Tab = 'doc' | 'news';
+type Tab = 'doc' | 'news' | 'parse' | 'translate';
 
 interface Props {
   entries: KBEntry[];
@@ -25,17 +28,19 @@ interface Props {
   open: boolean;
   onClose: () => void;
   /** 调用助理生成文本，实时回传 token。 */
-  onGenerate: (prompt: string, onToken: (text: string) => void, workflow?: WorkbenchMode) => Promise<string>;
+  onGenerate: WorkbenchGenerate;
+  generating: boolean;
+  onContinue?: () => void;
   onSearchNews: (signal: AbortSignal) => Promise<IpNews>;
   searchConfigured: boolean;
 }
 
-type DocType = 'email' | 'warning' | 'lawyer';
+type DocType = 'email' | 'risk' | 'dispute';
 
 const DOC_TYPES: { id: DocType; name: string; desc: string }[] = [
   { id: 'email', name: '邮件', desc: '往来沟通 / 进展汇报' },
-  { id: 'warning', name: '警告函', desc: '要求停止侵权' },
-  { id: 'lawyer', name: '律师函', desc: '正式法律函件' },
+  { id: 'risk', name: '合规与风控', desc: '清单、意见与制度' },
+  { id: 'dispute', name: '争议解决', desc: '诉讼、仲裁与和解' },
 ];
 
 const EMAIL_SUBTYPES = [
@@ -44,7 +49,7 @@ const EMAIL_SUBTYPES = [
   { id: 'generic', name: '通用商务邮件' },
 ];
 
-export function Workbench({ entries, imports, workflow, open, onClose, onGenerate, onSearchNews, searchConfigured }: Props) {
+export function Workbench({ entries, imports, workflow, open, onClose, onGenerate, generating, onContinue, onSearchNews, searchConfigured }: Props) {
   const [tab, setTab] = useState<Tab>('news');
 
   return (
@@ -62,21 +67,35 @@ export function Workbench({ entries, imports, workflow, open, onClose, onGenerat
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <ClipboardList className="h-4 w-4 text-primary" />
           <span className="text-sm font-semibold">{workflow ? workflowNames[workflow] : '事务台'}</span>
+          <div className="ml-auto flex items-center gap-2">
+          {generating && <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10">
+            转到后台
+          </button>}
+          {!generating && onContinue && <button type="button" onClick={onContinue} className="rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10">
+            继续生成
+          </button>}
           <button
             aria-label={workflow ? '关闭' + workflowNames[workflow] : '关闭事务台'}
             onClick={onClose}
-            className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X className="h-4 w-4" />
           </button>
+          </div>
         </div>
 
-        <div className={workflow ? 'hidden' : 'grid shrink-0 grid-cols-2 border-b border-border text-[0.8rem]'}>
+        <div className={workflow ? 'hidden' : 'grid shrink-0 grid-cols-2 border-b border-border text-[0.8rem] sm:grid-cols-4'}>
           <TabButton active={tab === 'news'} onClick={() => setTab('news')} icon={<Newspaper className="h-3.5 w-3.5" />}>
             知产新闻
           </TabButton>
           <TabButton active={tab === 'doc'} onClick={() => setTab('doc')} icon={<FileText className="h-3.5 w-3.5" />}>
             文件起草
+          </TabButton>
+          <TabButton active={tab === 'parse'} onClick={() => setTab('parse')} icon={<ScanText className="size-3.5" />}>
+            文档解析
+          </TabButton>
+          <TabButton active={tab === 'translate'} onClick={() => setTab('translate')} icon={<Languages className="size-3.5" />}>
+            专业翻译
           </TabButton>
         </div>
 
@@ -86,6 +105,8 @@ export function Workbench({ entries, imports, workflow, open, onClose, onGenerat
             <IpWorkflow key={imports[id]?.id} prefill={imports[id]} mode={id} entries={entries} onGenerate={onGenerate}/></div>)}
           <div hidden={!!workflow || tab !== 'news'}><NewsTab onSearchNews={onSearchNews} searchConfigured={searchConfigured} /></div>
           <div hidden={!!workflow || tab !== 'doc'}><DocTab onGenerate={onGenerate} /></div>
+          <div hidden={!!workflow || tab !== 'parse'}><DocumentToolPanel name="file_parse" onGenerate={onGenerate} /></div>
+          <div hidden={!!workflow || tab !== 'translate'}><DocumentToolPanel name="professional_translate" onGenerate={onGenerate} /></div>
         </div>
       </aside>
     </div>
@@ -183,167 +204,111 @@ function TabButton({
   );
 }
 
-function DocTab({ onGenerate }: { onGenerate: Props['onGenerate'] }) {
+function DocTab({ onGenerate }: { onGenerate: WorkbenchGenerate }) {
   const [docType, setDocType] = useState<DocType>('email');
   const [emailSub, setEmailSub] = useState(EMAIL_SUBTYPES[0].id);
   const [recipient, setRecipient] = useState('');
   const [keyInfo, setKeyInfo] = useState('');
+  const [templateName, setTemplateName] = useState('');
+  const [entries, setEntries] = useState<string[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
+  const groups = docType === 'email' ? [] : enterpriseDrafts[docType];
+  const template = groups.flatMap(group => group.templates).find(item => item.name === templateName);
+  const email = EMAIL_SUBTYPES.find(item => item.id === emailSub) || EMAIL_SUBTYPES[0];
+  const title = template?.name || email.name;
+  const field = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none';
+  const ready = docType === 'email' ? !!keyInfo.trim() : !!entries[0]?.trim();
 
-  function buildPrompt(): string {
-    const info = keyInfo.trim() || '（无，请基于常见情形生成模板）';
-    if (docType === 'email') {
-      const sub = EMAIL_SUBTYPES.find((x) => x.id === emailSub)?.name || '通用商务邮件';
-      return `你是知识产权律师的办案助理。请起草一封「${sub}」邮件，要求：
-1. 收件人：${recipient.trim() || '（默认客户）'}；
-2. 基于以下关键信息撰写，语气专业、简洁、可执行；
-3. 包含清晰的标题、称呼、正文、落款；
-4. 如涉及法定期限或具体法条，请明确标注，但不得编造文号；
-5. 直接输出邮件全文，不要额外解释。
-
-关键信息：
-${info}`;
-    }
-    if (docType === 'warning') {
-      return `你是知识产权律师的办案助理。请起草一封「警告函」，要求：
-1. 发函对象：${recipient.trim() || '（侵权方）'}；
-2. 基于以下侵权事实与权利要求撰写，语气正式、严肃、有法律依据；
-3. 结构包含：标题、致送对象、事实与侵权认定、法律依据、具体要求（限期停止侵权 / 下架 / 赔偿等）、保留追责声明、落款；
-4. 如涉及具体商标 / 专利号或法条，请明确标注，但不得编造；
-5. 直接输出警告函全文，不要额外解释。
-
-关键信息：
-${info}`;
-    }
-    return `你是知识产权律师的办案助理。请起草一份「律师函」，要求：
-1. 致送对象：${recipient.trim() || '（相关方）'}；
-2. 基于以下事实撰写，语气正式、严谨、体现律师身份；
-3. 结构包含：标题、律所与承办律师、致送对象、事实陈述、法律分析、具体要求与期限、落款；
-4. 如涉及具体商标 / 专利号或法条，请明确标注，但不得编造；
-5. 直接输出律师函全文，不要额外解释。
-
-关键信息：
-${info}`;
+  function selectCategory(category: DocType) {
+    if (category === docType) return;
+    setDocType(category);
+    if (category !== 'email') setTemplateName(enterpriseDrafts[category][0].templates[0].name);
+    setEntries([]);
+    setDraft('');
+    setError('');
   }
 
   async function generate() {
-    if (busy || !keyInfo.trim()) return;
+    if (busy || !ready) return;
     setBusy(true);
     setDraft('');
-    setCopied(false);
+    setError('');
+    const prompt = template ? enterpriseDraftPrompt(template, entries) : [
+      email.name,
+      '请起草一封专业、简洁的邮件，包含标题、称呼、正文和落款。',
+      '收件人：' + (recipient.trim() || '待补充'),
+      '关键信息：' + keyInfo.trim(),
+    ].join('\n\n');
     try {
-      await onGenerate(buildPrompt(), setDraft);
-    } catch (e) {
-      setDraft('⚠️ ' + ((e as Error).message || '生成失败'));
+      setDraft(await onGenerate(prompt, setDraft, { title }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '生成失败，请重试。');
     } finally {
       setBusy(false);
     }
   }
 
-  function copy() {
-    navigator.clipboard?.writeText(draft);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
-
-  const recipientPlaceholder =
-    docType === 'email'
-      ? '收件人（如：客户张先生 / 审查员）'
-      : docType === 'warning'
-      ? '侵权方 / 收函人（如：某网店经营者）'
-      : '致送对象（如：被投诉方 / 对方当事人）';
-
-  const keyPlaceholder =
-    docType === 'email'
-      ? '关键内容：审查意见要点 / 案件进展 / 需客户确认事项…'
-      : docType === 'warning'
-      ? '关键内容：侵权事实 / 权利基础（商标或专利号）/ 拟提出的整改与赔偿要求…'
-      : '关键内容：委托事项 / 事实经过 / 需对方履行的义务或期限…';
-
-  const genLabel =
-    docType === 'email' ? '生成邮件草稿' : docType === 'warning' ? '生成警告函' : '生成律师函';
-
   return (
-    <div className="space-y-3">
-      <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
-        选文件类型、填关键事实，一键生成可发送 / 可寄送的文书草稿。生成后可复制修改。
-      </p>
-
-      {/* 三类文件按钮 */}
-      <div className="grid grid-cols-3 gap-2">
-        {DOC_TYPES.map((d) => {
-          const active = docType === d.id;
-          return (
-            <button
-              key={d.id}
-              onClick={() => setDocType(d.id)}
-              className={`flex flex-col items-center gap-1 rounded-lg border p-2.5 text-center transition ${
-                active ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-border hover:border-primary/40'
-              }`}
-            >
-              <span className="text-[0.8rem] font-medium text-foreground">{d.name}</span>
-              <span className="text-[0.64rem] leading-tight text-muted-foreground">{d.desc}</span>
+    <form onSubmit={event => { event.preventDefault(); void generate(); }} className="space-y-4">
+      <fieldset disabled={busy} className="space-y-4">
+        <div className="grid grid-cols-3 gap-2">
+          {DOC_TYPES.map(category => (
+            <button key={category.id} type="button" aria-pressed={docType === category.id} onClick={() => selectCategory(category.id)}
+              className={'rounded-lg border px-2 py-3 text-center ' + (docType === category.id
+                ? 'border-primary bg-primary/5 text-primary' : 'border-border hover:border-primary/50')}>
+              <span className="block text-sm font-medium">{category.name}</span>
+              <span className="mt-1 block text-[0.68rem] text-muted-foreground">{category.desc}</span>
             </button>
-          );
-        })}
-      </div>
-
-      <div className="space-y-2">
-        {docType === 'email' && (
-          <select
-            value={emailSub}
-            onChange={(e) => setEmailSub(e.target.value)}
-            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-          >
-            {EMAIL_SUBTYPES.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        )}
-        <input
-          value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
-          placeholder={recipientPlaceholder}
-          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-        <textarea
-          value={keyInfo}
-          onChange={(e) => setKeyInfo(e.target.value)}
-          rows={5}
-          placeholder={keyPlaceholder}
-          className="w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-[0.82rem] outline-none focus:border-primary/50"
-        />
-        <button
-          onClick={generate}
-          disabled={busy || !keyInfo.trim()}
-          className="flex w-full items-center justify-center gap-1 rounded-md bg-primary px-3 py-1.5 text-[0.8rem] text-primary-foreground hover:opacity-90 disabled:opacity-40"
-        >
-          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
-          {busy ? '生成中…' : genLabel}
-        </button>
-      </div>
-
-      {draft && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[0.74rem] font-medium text-foreground">草稿</span>
-            <button
-              onClick={copy}
-              className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[0.68rem] text-muted-foreground hover:text-foreground"
-            >
-              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-              {copied ? '已复制' : '复制'}
-            </button>
-          </div>
-          <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2.5 text-[0.78rem] leading-relaxed">
-            {draft}
-          </pre>
+          ))}
         </div>
-      )}
-    </div>
+        {docType === 'email' ? <>
+          <label className="grid gap-1.5 text-sm">
+            邮件类型
+            <select className={field} value={emailSub} onChange={event => setEmailSub(event.target.value)}>
+              {EMAIL_SUBTYPES.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            收件人
+            <input className={field} value={recipient} onChange={event => setRecipient(event.target.value)} placeholder="如客户、审查员" />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            关键信息
+            <textarea className={field} rows={5} maxLength={20000} value={keyInfo} onChange={event => setKeyInfo(event.target.value)}
+              placeholder="填写案件进展、需对方确认的事项或邮件要点" />
+          </label>
+        </> : <>
+          <label className="grid gap-1.5 text-sm">
+            文书类型
+            <select aria-label="文书类型" className={field} value={templateName} onChange={event => { setTemplateName(event.target.value); setEntries([]); setDraft(''); setError(''); }}>
+              {groups.map(group => <optgroup key={group.label} label={group.label}>
+                {group.templates.map(item => <option key={item.name}>{item.name}</option>)}
+              </optgroup>)}
+            </select>
+          </label>
+          {template?.fields.map((label, index) => (
+            <label className="grid gap-1.5 text-sm" key={label}>
+              {label}
+              <textarea className={field} rows={index === 0 ? 3 : 2} maxLength={20000} required={index === 0}
+                value={entries[index] || ''} placeholder={index === 0 ? '填写已脱敏的事实' : '尚不清楚可留空'}
+                onChange={event => setEntries(previous => {
+                  const next = [...previous];
+                  next[index] = event.target.value;
+                  return next;
+                })} />
+            </label>
+          ))}
+        </>}
+        <button disabled={!ready}
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-45">
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}
+          {busy ? '正在生成…' : docType === 'email' ? '生成邮件草稿' : '生成' + title + '初稿'}
+        </button>
+      </fieldset>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {draft && <ReportPreview title={title} report={draft} busy={busy} copy />}
+    </form>
   );
 }

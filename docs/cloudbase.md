@@ -10,6 +10,7 @@
 
 1. [002_login_names.sql](../database/migrations/002_login_names.sql) 建立区分大小写的登录名称表、受限查询函数和环境专用查询密钥，并迁移可识别的已有用户名。
 2. [003_public_knowledge.sql](../database/migrations/003_public_knowledge.sql) 建立公共知识表及登录用户的只读权限。
+3. [004_word_originals.sql](../database/migrations/004_word_originals.sql) 允许在私有文件桶中保存旧版 Word（.doc）原件。
 3. [public_knowledge.sql](../database/seeds/public_knowledge.sql) 写入 158 条公共资料。重复执行只补充缺失的 ID，保留管理员已经修订的条目。运行下列查询核对首次初始化结果，依次应为 158、144、6、8。
 
 ```sql

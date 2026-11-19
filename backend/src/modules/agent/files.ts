@@ -2,6 +2,7 @@ import multer from 'multer';
 import pdf from 'pdf-parse';
 import WordExtractor from 'word-extractor';
 import mammoth from 'mammoth';
+import { documentMaxChars } from '../../../../shared/document-tools.mjs';
 
 /** In-memory upload (no disk persistence needed — file text is sent to the LLM). */
 export const upload = multer({
@@ -14,8 +15,6 @@ const TEXT_EXT = new Set([
   'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'go', 'rs', 'c', 'cpp',
   'h', 'hpp', 'sh', 'bash', 'html', 'css', 'xml', 'sql', 'toml',
 ]);
-
-const MAX_CHARS = 40000;
 
 export interface ParsedFile {
   name: string;
@@ -89,8 +88,8 @@ export async function parseFile(file: Express.Multer.File): Promise<ParsedFile> 
     text = file.buffer.toString('utf-8');
   }
 
-  const truncated = text.length > MAX_CHARS;
-  const finalText = truncated ? text.slice(0, MAX_CHARS) : text;
+  const truncated = text.length > documentMaxChars;
+  const finalText = truncated ? text.slice(0, documentMaxChars) : text;
 
   return {
     name: original,

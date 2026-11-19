@@ -10,11 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.qa-artifacts'
 OUT.mkdir(exist_ok=True)
 SDK = """
+const files = new Map();
 export default {init(){return {auth:()=>({
   async getLoginState(){return {user:{uid:'qa-user'}}},
   async getAccessToken(){return {accessToken:'qa-token'}},
   async signOut(){}
-})}}};
+}),storage:{from:bucket=>({
+  async upload(path,file){files.set(bucket+'/'+path,file);return {}},
+  async download(path){return {data:files.get(bucket+'/'+path)}},
+  async remove(paths){paths.forEach(path=>files.delete(bucket+'/'+path));return {}}
+})}}}};
 """
 
 with sync_playwright() as p:
@@ -24,8 +29,10 @@ with sync_playwright() as p:
     page = context.new_page()
     page.set_default_timeout(8000)
     errors, requests, records = [], [], {}
+    continuations = []
     held_chats = []
     hold_chat = False
+    writes_to_running_chats = []
     model_loads = []
     models = [
         dict(id='zhipu-glm',label='智谱 GLM-4.7',provider='智谱 AI',available=True,free=True,vision=False),
@@ -41,12 +48,21 @@ with sync_playwright() as p:
         if '/rpc/put_user_record' in route.request.url:
             body = route.request.post_data_json
             key = (body['p_kind'], body['p_id'])
+            if records.get(key, {}).get('generation_id'):
+                writes_to_running_chats.append(key)
+                route.fulfill(status=409,json={'code':'40001'})
+                return
             row = dict(kind=body['p_kind'],id=body['p_id'],payload=body['p_payload'],revision=body['p_revision']+1)
             records[key] = row
             route.fulfill(json=row)
         elif '/rpc/delete_user_record' in route.request.url:
             body = route.request.post_data_json
-            records.pop((body['p_kind'],body['p_id']),None)
+            key = (body['p_kind'], body['p_id'])
+            if records.get(key, {}).get('generation_id'):
+                writes_to_running_chats.append(key)
+                route.fulfill(status=409,json={'code':'40001'})
+                return
+            records.pop(key,None)
             route.fulfill(status=204)
         else:
             query = parse_qs(urlparse(route.request.url).query)
@@ -57,18 +73,34 @@ with sync_playwright() as p:
             route.fulfill(json=rows)
 
     def chat(route):
+        body = route.request.post_data_json
         if hold_chat:
+            records[('sessions',body['conversationId'])]['generation_id'] = 'fixture-running'
             held_chats.append(route)
             return
+        finish_chat(route)
+
+    def finish_chat(route):
         body = route.request.post_data_json
-        requests.append(body)
         row = records[('sessions', body['conversationId'])]
+        row['generation_id'] = None
         assistant = next(message for message in row['payload']['messages'] if message['id'] == body['assistantMessageId'])
-        assistant.update(content='Mocked answer '+str(len(requests)), status='complete')
-        if len(requests) == 6:
-            assistant['content'] += '\n\n' + '\n\n'.join(f'模拟长回答第 {line} 段' for line in range(60)) + '\n\n长对话末尾'
+        if body.get('resumeRevision'):
+            continuations.append(body)
+            assert assistant['status'] == 'interrupted'
+            assert row['revision'] == body['resumeRevision']
+            assistant.update(content='第一条 双方约定保密。\n\n第二条 保密期限为两年。',status='complete')
+            assistant.pop('continuation')
+        else:
+            requests.append(body)
+            assistant.update(content='Mocked answer '+str(len(requests)), status='complete')
+            if len(requests) == 6:
+                assistant['content'] += '\n\n' + '\n\n'.join(f'模拟长回答第 {line} 段' for line in range(60)) + '\n\n长对话末尾'
+            if body.get('workflow') == 'draft':
+                assistant.update(content='第一条 双方约定保密。',status='interrupted',continuation={'model':body['model']})
         row['revision'] += 1
-        events = [dict(type='token',content=assistant['content']),dict(type='saved',record=row),dict(type='done')]
+        events = [dict(type='content' if body.get('workflow') else 'token', content=assistant['content']),
+                  dict(type='saved',record=row),dict(type='done')]
         route.fulfill(content_type='text/event-stream',body=''.join('data: '+json.dumps(event,ensure_ascii=False)+'\n\n' for event in events))
 
     page.route('**/node_modules/.vite/deps/@cloudbase_js-sdk.js*',lambda route: route.fulfill(content_type='application/javascript',body=SDK))
@@ -251,6 +283,22 @@ with sync_playwright() as p:
     assert custom.get_by_role('button', name='保存', exact=True).is_visible()
     page.screenshot(path=str(OUT/'custom-model-preset-mobile.png'), animations='disabled')
     page.set_viewport_size({'width':1440,'height':1000})
+    supplier.select_option('阿里千问')
+    catalog = custom.get_by_label('模型名称', exact=True)
+    assert catalog.locator('optgroup').count() >= 5
+    assert catalog.locator('option').count() >= 30
+    assert catalog.locator('option[value="qwen3.8-max-0902"]').inner_text() == 'Qwen3.8-Max（0902 快照） · qwen3.8-max-0902'
+    catalog.select_option('qwen3.7-plus')
+    custom.get_by_label('API Key', exact=True).fill('synthetic-qwen-key')
+    custom.get_by_role('button',name='测试连接').click()
+    custom.get_by_role('status').filter(has_text='连通测试通过').wait_for()
+    assert connections.pop()['model'] == 'qwen3.7-plus'
+    catalog.select_option('')
+    custom.get_by_label('模型 ID',exact=True).fill('qwen-manual-fixture')
+    assert custom.get_by_label('模型 ID',exact=True).input_value() == 'qwen-manual-fixture'
+    supplier.select_option('腾讯混元')
+    custom.get_by_text('高级选项',exact=True).click()
+    assert custom.get_by_label('Base URL').input_value() == 'https://tokenhub.tencentmaas.com/v1'
     supplier.select_option('DeepSeek')
     assert custom.get_by_label('模型名称', exact=True).input_value() == 'deepseek-flash'
     custom.get_by_text('高级选项', exact=True).click()
@@ -372,16 +420,33 @@ with sync_playwright() as p:
     assert send_report.is_disabled()
     workbench.get_by_role('checkbox',name=re.compile('^我已脱敏')).check()
     send_report.click()
-    workbench.get_by_text('Mocked answer 7',exact=True).wait_for()
+    workbench.get_by_text('第一条 双方约定保密。',exact=True).wait_for()
+    workbench.get_by_role('button',name='继续生成',exact=True).wait_for()
     assert requests[-1]['workflow'] == 'draft'
+    draft_request = requests[-1]
     workbench.get_by_role('button',name='关闭知产文书').click()
+    page.reload(wait_until='networkidle')
+    main.get_by_text('第一条 双方约定保密。',exact=True).wait_for()
+    main.get_by_role('button',name='继续生成',exact=True).click()
+    main.get_by_text('第二条 保密期限为两年。',exact=True).wait_for()
+    assert main.get_by_text('第一条 双方约定保密。',exact=True).count() == 1
+    assert continuations[-1]['assistantMessageId'] == draft_request['assistantMessageId']
+    assert continuations[-1]['model'] == draft_request['model']
+    assert continuations[-1]['workflow'] == draft_request['workflow']
+    main.get_by_role('button',name='继续生成',exact=True).wait_for(state='hidden')
     workbench = open_workflow('合规提示')
     workbench.get_by_label('合规提示事项').select_option('研发合规清单')
     workbench.get_by_label('立项',exact=False).check()
+    workbench.get_by_role('checkbox',name=re.compile('^我已脱敏')).check()
+    workbench.get_by_role('button',name='生成合规提示初稿').click()
+    workbench.get_by_text('Mocked answer 8',exact=True).wait_for()
+    assert requests[-1]['workflow'] == 'compliance'
+    assert '（已勾选）' in requests[-1]['messages'][-1]['content']
     with page.expect_download() as checked_file:
-        workbench.get_by_role('button',name='导出清单（1/5）').click()
-    assert '[x] 立项' in checked_file.value.path().read_text(encoding='utf-8')
+        workbench.get_by_role('button',name='导出 Markdown',exact=True).click()
+    assert 'Mocked answer 8' in checked_file.value.path().read_text(encoding='utf-8')
     workbench.get_by_role('button',name='关闭合规提示').click()
+    main.get_by_text('Mocked answer 8',exact=True).wait_for()
     workbench = open_workflow('检索对比')
     workbench.get_by_label('查找知识库材料').fill('商标 混淆')
     assert workbench.locator('summary:visible').count() > 0
@@ -408,8 +473,120 @@ with sync_playwright() as p:
     with ZipFile(report_file.value.path()) as doc:
         xml = doc.read('word/document.xml').decode()
         assert all(s in xml for s in ['人工复核示例','去重后 1 条','未完成环节','需人工复核'])
-    assert len(requests) == 7
+    assert len(requests) == 8
     workbench.get_by_role('button',name='关闭检索对比').click()
+
+    main.get_by_role('button',name='事务台',exact=True).click()
+    workbench = page.get_by_role('complementary',name='事务台',exact=True)
+    def wait_workbench_result(count):
+        workbench.get_by_text('Mocked answer '+str(count),exact=True).wait_for()
+        page.wait_for_function('() => !document.querySelector(\'button[title="停止生成"]\')')
+        assert len(requests) == count
+        row = records[('sessions', requests[-1]['conversationId'])]
+        assert row['payload']['messages'][-1]['content'] == 'Mocked answer '+str(count)
+
+    workbench.get_by_role('button',name='文件起草',exact=True).click()
+    assert not workbench.get_by_role('button',name='警告函').count()
+    workbench.get_by_role('button',name=re.compile('^合规与风控')).click()
+    workbench.get_by_label('文书类型',exact=True).select_option('岗位合规职责清单')
+    workbench.get_by_label('涉及部门和岗位').fill('采购部及其经办岗位')
+    workbench.get_by_role('button',name='生成岗位合规职责清单初稿').click()
+    wait_workbench_result(9)
+    assert '汇报路径' in requests[-1]['messages'][-1]['content']
+    workbench.get_by_role('button',name=re.compile('^争议解决')).click()
+    workbench.get_by_label('文书类型',exact=True).select_option('和解协议')
+    workbench.get_by_label('各方主体、争议范围与已达成的共识').fill('虚构甲乙双方达成和解')
+    workbench.get_by_role('button',name='生成和解协议初稿').click()
+    wait_workbench_result(10)
+    assert '待谈判条款' in requests[-1]['messages'][-1]['content']
+
+    workbench.get_by_role('button',name='文档解析',exact=True).click()
+    sample = '甲诉乙。判赔 20 元。'
+    page.route('**/api/agent/files', lambda route: route.fulfill(json={
+        'name':'judgment.txt','type':'text/plain','size':len(sample.encode()),'text':sample,'charCount':len(sample),'truncated':False}))
+    workbench.locator('input[type=file]:visible').set_input_files({'name':'judgment.txt','mimeType':'text/plain','buffer':sample.encode()})
+    workbench.get_by_role('checkbox',name=re.compile('^我已脱敏')).check()
+    workbench.get_by_role('button',name='解析文档',exact=True).click()
+    wait_workbench_result(11)
+    assert requests[-1]['documentTool'] == {'name':'file_parse'}
+    assert requests[-1]['messages'][-1]['content'] == sample
+
+    workbench.get_by_role('button',name='专业翻译',exact=True).click()
+    workbench.get_by_role('radio',name='粘贴正文').check()
+    workbench.get_by_label('目标语言').select_option('ja')
+    workbench.get_by_label('原文',exact=True).fill('权利要求书')
+    workbench.get_by_role('checkbox',name=re.compile('^我已脱敏')).check()
+    workbench.get_by_role('button',name='生成译文').click()
+    wait_workbench_result(12)
+    assert requests[-1]['documentTool'] == {'name':'professional_translate','targetLanguage':'ja'}
+    workbench.get_by_role('button',name='关闭事务台').click()
+
+    page.get_by_role('button',name='账号菜单').click()
+    page.get_by_role('menuitem',name='设置',exact=True).click()
+    settings = page.get_by_role('dialog',name='设置')
+    assert not settings.get_by_text('已保存的文件原件',exact=True).count()
+    settings.get_by_role('button',name='文件下载',exact=True).click()
+    settings.get_by_text('已保存的文件原件',exact=True).wait_for()
+    with page.expect_download() as original:
+        settings.get_by_role('button',name='下载 judgment.txt',exact=True).click()
+    assert original.value.path().read_text(encoding='utf-8') == sample
+    page.screenshot(path=str(OUT/'assistant-file-downloads-desktop.png'),animations='disabled')
+    settings.get_by_role('button',name='关闭',exact=True).click()
+
+    # Hold three independent requests and finish them while another conversation is selected.
+    sidebar = page.get_by_role('complementary',name='工作空间侧边栏')
+    hold_chat = True
+    def hold_answer(text):
+        sidebar.get_by_role('button',name='新建对话',exact=True).click()
+        main.locator('textarea').fill(text)
+        with page.expect_request('**/api/agent/chat') as sent:
+            main.get_by_role('button',name='发送',exact=True).click()
+        return sent.value.post_data_json['conversationId']
+
+    def session_row(id):
+        return sidebar.locator(f'[data-session-id="{id}"]')
+
+    session_a = hold_answer('后台回答 A')
+    session_row(session_a).get_by_label('正在生成').wait_for()
+    session_b = hold_answer('后台回答 B')
+    session_row(session_b).get_by_label('正在生成').wait_for()
+    main.locator('textarea').fill('B 的未发送草稿')
+    session_row(session_a).get_by_role('button',name='打开对话：后台回答 A').click()
+    assert main.locator('textarea').input_value() == ''
+    session_row(session_b).get_by_role('button',name='打开对话：后台回答 B').click()
+    assert main.locator('textarea').input_value() == 'B 的未发送草稿'
+
+    workbench = open_workflow('合规提示')
+    workbench.get_by_label('合规提示事项').select_option('研发合规清单')
+    workbench.get_by_label('项目名称（可选）').fill('后台文书 C')
+    workbench.get_by_role('checkbox',name=re.compile('^我已脱敏')).check()
+    with page.expect_request('**/api/agent/chat') as sent:
+        workbench.get_by_role('button',name='生成合规提示初稿').click()
+    session_c = sent.value.post_data_json['conversationId']
+    workbench.get_by_role('button',name='转到后台').click()
+    session_row(session_c).get_by_label('正在生成').wait_for()
+    session_row(session_a).get_by_role('button',name='打开对话：后台回答 A').click()
+    assert len(held_chats) == 3
+    finish_chat(held_chats[1])
+    session_row(session_b).get_by_label('正在生成').wait_for(state='hidden')
+    finish_chat(held_chats[2])
+    session_row(session_c).get_by_label('正在生成').wait_for(state='hidden')
+    assert session_row(session_a).locator('button[aria-current="page"]').count() == 1
+    assert main.get_by_role('button',name='停止生成').is_visible()
+    row_a = records[('sessions',session_a)]
+    row_a['generation_id'] = None
+    row_a['payload']['messages'][-1].update(content='停止前已保存的 A',status='interrupted')
+    main.get_by_role('button',name='停止生成').click()
+    held_chats[0].abort('aborted')
+    session_row(session_a).get_by_label('正在生成').wait_for(state='hidden')
+    assert main.get_by_text('停止前已保存的 A',exact=True).is_visible()
+    assert not writes_to_running_chats
+    session_row(session_b).get_by_role('button',name='打开对话：后台回答 B').click()
+    main.get_by_text('Mocked answer 13',exact=True).wait_for()
+    assert main.locator('textarea').input_value() == 'B 的未发送草稿'
+    session_row(session_c).get_by_role('button',name=re.compile('^打开对话：研发合规清单')).click()
+    main.get_by_text('Mocked answer 14',exact=True).wait_for()
+    hold_chat = False
 
     # Mobile layout: each restored control remains in view with no horizontal overflow.
     page.set_viewport_size({'width':390,'height':844})

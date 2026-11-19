@@ -1,5 +1,6 @@
 import express from 'express'
 import { createApp } from '../../backend/src/app'
+import edgeoneConfig from '../../edgeone.json'
 
 const app = express()
 
@@ -13,6 +14,9 @@ app.use((req, _res, next) => {
   next()
 })
 
-app.use(createApp({ serveFrontend: false }))
+app.use(createApp({
+  serveFrontend: false,
+  requestTimeoutMs: edgeoneConfig.cloudFunctions.nodejs.maxDuration * 1000,
+}))
 
 export default app

@@ -2,12 +2,22 @@ import { requireCloud } from './cloudbase';
 import { currentOwner, saveCollection } from './cloud-store';
 import type { AttachedFile } from '@/types/agent';
 
+const documentContentTypes: Record<string, string> = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  md: 'text/markdown',
+  markdown: 'text/markdown',
+  txt: 'text/plain',
+};
+
 export async function storeOriginal(file: File, id: string = crypto.randomUUID()): Promise<AttachedFile> {
   if (file.size > 4 * 1024 * 1024) throw new Error('文件超过 4 MiB，请压缩或拆分后重试。');
   const uid = currentOwner();
   if (!uid) throw new Error('请先登录。');
   const safeName = file.name.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-120) || 'attachment';
-  const type = file.type || (/\.md$/i.test(file.name) ? 'text/markdown' : 'text/plain');
+  const extension = /\.([a-z0-9]+)$/i.exec(file.name)?.[1].toLowerCase() || '';
+  const type = documentContentTypes[extension] || file.type || 'text/plain';
   const path = `${uid}/${id}/${safeName}`;
   const bucket = requireCloud().storage.from('private-files');
   const { error } = await bucket.upload(path, file, { contentType: type, upsert: false });

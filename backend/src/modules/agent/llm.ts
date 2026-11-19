@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { env } from '../../config/env';
 import { availableTools, executeTool } from './tools';
 import { MODEL_REGISTRY, getProviderChain, type ModelProvider } from './providers';
@@ -96,7 +97,7 @@ export async function* streamCompletions(
   }
 }
 
-async function* streamSegment(
+export async function* streamSegment(
   messages: ChatMessage[],
   provider: ModelProvider,
   signal?: AbortSignal,
@@ -379,6 +380,7 @@ export async function runAgent(
       : [{ role: 'system', content: systemPrompt }, ...history.map((m) => ({ ...m }))];
 
   const MAX_ROUNDS = 3;
+  const documentSource = history.filter(message => message.role === 'user').at(-1)?.content || '';
   /** Bound tool results to keep the model context manageable. */
   const TOOL_RESULT_LIMIT = 2400;
   const clip = (s: string) => (s.length > TOOL_RESULT_LIMIT ? s.slice(0, TOOL_RESULT_LIMIT) + '\n…（结果过长已截断）' : s);
@@ -452,7 +454,7 @@ export async function runAgent(
           const name = tc.function.name;
           const args = tc.function.arguments;
           onEvent({ type: 'tool_start', id: tc.id, name, arguments: args });
-          const result = await executeTool(name, args, tavilyKey, signal);
+          const result = await executeTool(name, args, tavilyKey, signal, { provider: candidate, source: documentSource });
           onEvent({ type: 'tool_end', id: tc.id, name, result });
           messages.push({ role: 'tool', tool_call_id: tc.id, content: clip(result) });
           executedTools = true;
@@ -514,7 +516,12 @@ export async function runAgent(
       // the whole chain instead of erroring out immediately.
       if (!produced && !signal?.aborted && RETRYABLE.test(msg) && backoffRounds < 2) {
         backoffRounds++;
-        await new Promise((r) => setTimeout(r, 2500 * backoffRounds));
+        try {
+          await delay(2500 * backoffRounds, undefined, { signal });
+        } catch (error) {
+          if (signal?.aborted) return;
+          throw error;
+        }
         streamErr = null;
         continue;
       }

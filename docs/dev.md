@@ -94,9 +94,9 @@ package.json / package-lock.json       两个 npm 工作区的命令与依赖版
 | `POST /api/agent/ip-news` | 登录后提交当前用户的 `{ apiKey }`，由后端向 Tavily 查询当天的公开新闻 |
 | `POST /api/agent/extract-dossier` | 旧客户端兼容接口，仍要求登录和外发授权 |
 
-对话请求须先保存用户消息与回答占位。聊天最多 60 条消息，JSON 请求上限 5 MiB，文件上限 4 MiB，提取文本上限 40,000 字符。PDF 解析读取嵌入文本，扫描件需先 OCR 或作为支持视觉输入的图片提交。Word 请使用 DOCX。聊天在 100 秒主动截止，正常完成、取消或超时都会尽力保存已收到的内容。
+对话请求须先保存用户消息与回答占位。聊天最多 60 条消息，JSON 请求上限 5 MiB，文件上限 4 MiB，提取文本上限 40,000 字符。PDF 解析读取嵌入文本，扫描件需先 OCR 或作为支持视觉输入的图片提交。Word 请使用 DOCX。EdgeOne 上的聊天生成使用云函数剩余执行时间，预留 15 秒给 CloudBase 保存和 1 秒给完成事件。按当前 120 秒配置，单次可用于生成的时间最多 104 秒，认证和读取记录等耗时会从中扣除。本地运行时单次生成上限为 120 秒。正常完成、取消或超时都会尽力保存已收到的内容。
 
-业务报告在 `/api/agent/chat` 使用可选的 `workflow` 字段，保留原有认证、外发授权、会话锁和保存流程。服务端核对结构化输出与当前有效条文后才发送结果。`npm run test:workbench` 测试法条选择、跨年切换、引文校验和 CSV 初筛。
+业务报告在 `/api/agent/chat` 使用可选的 `workflow` 字段，保留认证、外发授权、会话锁和保存流程。服务端流式发送可读草稿并标明尚待核验。长报告或超时请求保存续写位置，用户点击「继续生成」后通过会话版本继续同一条回复，最终报告再核对格式和引文。`npm run test:workbench` 测试法条选择、跨年切换、引文校验和 CSV 初筛。
 
 法规库更新工具 `scripts/import-law-library.py` 使用 Python、requests、beautifulsoup4 和 PyMuPDF。对需要浏览器访问的官网，可从同一官方 URL 导出正文到临时目录，用 `--texts <目录>` 指定按来源 ID 命名的 `.txt`。合入前核对文号、施行日期、提取首尾和 PDF 跨页分段。运行 `npx tsx scripts/write-knowledge-seed.ts` 可重建初始化 SQL。已有公共 ID 的修订需要独立的数据库更新迁移，初始化脚本会跳过这些 ID。
 

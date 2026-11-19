@@ -1,10 +1,31 @@
 import { searchWeb } from './ip-news';
+import { translationLanguages } from '../../../../shared/document-tools.mjs';
+import type { ModelProvider } from './providers';
 import type { ToolDefinition } from './types';
 
 /**
  * Tool catalogue exposed to the LLM. The model decides when to call these.
  */
 export const TOOLS: ToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'file_parse',
+      description: '按结构提取当前用户提供的判决书、起诉状、合同或公证书正文，返回当事人、案号、要旨、金额、原文引用法条、关键日期及可核对的原文片段。',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'professional_translate',
+      description: '使用内置知识产权术语库翻译当前用户提供的正文。仅在用户明确要求翻译时调用。若只翻译其中一段，可提供原文片段。',
+      parameters: { type: 'object', properties: {
+        targetLanguage: { type: 'string', enum: Object.keys(translationLanguages), description: '目标语言代码（zh、en、ja、ko、fr、de、es）。' },
+        excerpt: { type: 'string', description: '可选，逐字复制待译片段。整份文件翻译时省略。' },
+      }, required: ['targetLanguage'] },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -163,7 +184,13 @@ function datetimeTool(timezone?: string): string {
 /**
  * Execute a tool by name. `arguments` is a JSON-encoded string from the LLM.
  */
-export async function executeTool(name: string, argsJson: string, tavilyKey?: string, signal?: AbortSignal): Promise<string> {
+export async function executeTool(
+  name: string,
+  argsJson: string,
+  tavilyKey?: string,
+  signal?: AbortSignal,
+  document?: { provider: ModelProvider; source: string },
+): Promise<string> {
   let args: Record<string, unknown> = {};
   try {
     args = argsJson ? JSON.parse(argsJson) : {};
@@ -181,6 +208,23 @@ export async function executeTool(name: string, argsJson: string, tavilyKey?: st
         return calcTool(String(args.expression ?? ''));
       case 'get_datetime':
         return datetimeTool(args.timezone ? String(args.timezone) : undefined);
+      case 'file_parse':
+      case 'professional_translate': {
+        if (!document?.source.trim()) return '请先上传文档或粘贴正文。';
+        const { documentToolSchema, DocumentToolError, runDocumentTool } = await import('./document-tools');
+        const parsed = documentToolSchema.safeParse({ name, targetLanguage: args.targetLanguage });
+        if (!parsed.success) return '请指定支持的目标语言。';
+        const excerpt = typeof args.excerpt === 'string' ? args.excerpt.trim() : '';
+        if (excerpt && !document.source.includes(excerpt)) return '译文片段须逐字来自用户提供的原文。';
+        let result = '';
+        try {
+          await runDocumentTool(parsed.data, excerpt || document.source, document.provider, signal, text => { result += text; });
+          return result;
+        } catch (error) {
+          if (signal?.aborted && result) return result;
+          return error instanceof DocumentToolError ? error.message : '文档处理失败，请核对原文后重试。';
+        }
+      }
       default:
         return `未知工具：${name}`;
     }

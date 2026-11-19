@@ -115,6 +115,14 @@ test(`CloudBase SQL migration: ${schema.name}`, async t => {
       const files = await Promise.all(['migrations/002_login_names.sql', 'migrations/003_public_knowledge.sql', 'seeds/public_knowledge.sql']
         .map(path => readFile(new URL('../database/' + path, import.meta.url), 'utf8')))
       for (const sql of files) await db.exec(sql)
+      const wordMigration = await readFile(new URL('../database/migrations/004_word_originals.sql', import.meta.url), 'utf8')
+      await db.exec(wordMigration)
+      await db.exec(wordMigration)
+      const bucket = await db.query<{ public: boolean; allowed_mime_types: string[] }>(
+        "SELECT public, allowed_mime_types FROM storage.buckets WHERE id = 'private-files'",
+      )
+      assert.equal(bucket.rows[0].public, false)
+      assert.equal(bucket.rows[0].allowed_mime_types.filter(type => type === 'application/msword').length, 1)
       const lookup = (await db.query<{lookup_key: string}>('SELECT lookup_key FROM xiaozhi_private.login_config')).rows[0].lookup_key
       const name = async () => (await db.query<{name: string}>('SELECT public.my_login_name() AS name')).rows[0].name
       const assign = (value: string) => db.query('SELECT public.set_login_name($1)', [value])

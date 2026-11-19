@@ -6,10 +6,11 @@ import { z } from 'zod';
 import { runAgent, extractDossier, streamCompletions } from './llm';
 import { customModelSchema, customProvider } from './custom-provider';
 import { MODEL_REGISTRY, listProviders } from './providers';
-import { generateReport, workflowSchema } from './workbench-report';
+import { generateReport, reportDraftSchema, ReportNeedsContinuation, workflowSchema } from './workbench-report';
+import { documentToolSchema, DocumentToolError, runDocumentTool, translationCheckpointSchema, TranslationNeedsContinuation } from './document-tools';
 import { findIpNews } from './ip-news';
 import { upload, parseFile } from './files';
-import { identity, recordRpc, type UserRecord } from '../cloudbase';
+import { CLOUD_REQUEST_TIMEOUT_MS, identity, recordRpc, type UserRecord } from '../cloudbase';
 import { requireModelConsent } from './privacy';
 import { AppError } from '../../middleware/errorHandler';
 import type { ChatMessage, AgentEvent } from './types';
@@ -27,12 +28,22 @@ const modelSchema = z.object({
 const newsSchema = z.object({ apiKey: z.string().trim().max(512).regex(/^[!-~]+$/) });
 const chatSchema = modelSchema.extend({
   workflow: workflowSchema.optional(),
+  documentTool: documentToolSchema.optional(),
   tavilyKey: newsSchema.shape.apiKey.optional(),
   allowResume: z.boolean().optional(),
+  manualContinuation: z.boolean().optional(),
   resumeRevision: z.number().int().positive().optional(),
   messages: z.array(messageSchema).min(1).max(60),
   knowledge: z.string().optional(), dossier: z.string().optional(),
   conversationId: z.string().min(1).max(200), assistantMessageId: z.string().min(1).max(200),
+}).refine(input => !input.workflow || !input.documentTool);
+
+const continuationSchema = z.object({
+  model: z.string(),
+  workflow: workflowSchema.optional(),
+  reportDraft: reportDraftSchema.optional(),
+  documentTool: documentToolSchema.optional(),
+  translation: translationCheckpointSchema.optional(),
 });
 
 function selectedModel(id: string, hasImages: boolean, custom?: z.infer<typeof customModelSchema>) {
@@ -104,8 +115,14 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   const messages = Array.isArray(stored.messages) ? stored.messages as Array<Record<string, unknown>> : [];
   const assistant = messages.find(message => message.id === input.assistantMessageId && message.role === 'assistant');
   const resume = input.resumeRevision !== undefined;
+  const savedContinuation = continuationSchema.safeParse(assistant?.continuation).data;
+  const manual = input.manualContinuation || !!savedContinuation;
+  const canLoadContinuation = savedContinuation
+    ? savedContinuation.model === input.model && savedContinuation.workflow === input.workflow
+      && JSON.stringify(savedContinuation.documentTool) === JSON.stringify(input.documentTool)
+    : !manual && !input.workflow && !input.documentTool && !!assistant?.content;
   if (!assistant || (resume && (record.revision !== input.resumeRevision || assistant !== messages.at(-1)
-    || assistant.status !== 'interrupted' || !assistant.content || input.workflow))) {
+    || assistant.status !== 'interrupted' || !canLoadContinuation))) {
     await recordRpc(user.token, 'finish_chat', { p_id: input.conversationId, p_run: runId, p_payload: stored });
     throw new AppError(400, '请先保存本次消息再生成回答。');
   }
@@ -121,24 +138,55 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   const ac = new AbortController();
   let timedOut = false;
   let completed = false;
+  let segmentEnded = false;
   let failure = '';
-  const partial = resume ? String(assistant.content) : '';
+  const partial = resume && typeof assistant.content === 'string' ? assistant.content : '';
   let content = partial;
+  let reportDraft = resume ? savedContinuation?.reportDraft : undefined;
+  let translation = resume ? savedContinuation?.translation : undefined;
+  const emit = (text: string) => {
+    content += text;
+    send({ type: 'token', content: text });
+  };
+  const replaceContent = (text: string) => {
+    content = text;
+    send({ type: 'content', content: text });
+  };
   const toolCalls: Array<Record<string, unknown>> = resume && Array.isArray(assistant.toolCalls) ? [...assistant.toolCalls] : [];
   const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 15_000);
-  // Leave time to persist a partial answer before the platform's hard limit.
-  const deadline = setTimeout(() => { timedOut = true; ac.abort(); }, 100_000);
+  const requestDeadline = res.locals.requestDeadline as number | undefined;
+  // Keep the full CloudBase save timeout and one second to send the final SSE events.
+  const generationTimeMs = requestDeadline === undefined ? 120_000
+    : Math.floor(requestDeadline - performance.now() - CLOUD_REQUEST_TIMEOUT_MS - 1000);
+  const stopGeneration = () => { timedOut = true; ac.abort(); };
+  if (generationTimeMs <= 0) stopGeneration();
+  const deadline = generationTimeMs > 0 ? setTimeout(stopGeneration, generationTimeMs) : undefined;
   res.on('close', () => { ac.abort(); clearInterval(heartbeat); clearTimeout(deadline); });
   try {
+    ac.signal.throwIfAborted();
     if (input.workflow) {
       const facts = input.messages.at(-1)?.content || '';
-      content = await generateReport(input.workflow, facts, input.knowledge || '', provider, ac.signal,
-        await recordRpc<KBEntry[]>(user.token, 'read_public_knowledge', {}));
-      send({ type: 'token', content });
+      const report = await generateReport(input.workflow, facts, input.knowledge || '', provider, ac.signal,
+        await recordRpc<KBEntry[]>(user.token, 'read_public_knowledge', {}, ac.signal), {
+          previous: reportDraft,
+          onDraft: (draftContent, draft) => {
+            reportDraft = draft;
+            replaceContent(draftContent);
+          },
+        });
+      replaceContent(report);
+      completed = true;
+    } else if (input.documentTool) {
+      const source = input.messages.filter(message => message.role === 'user').at(-1)?.content || '';
+      await runDocumentTool(input.documentTool, source, provider, ac.signal, emit,
+        manual && input.documentTool.name === 'professional_translate' ? {
+          previous: translation,
+          onCheckpoint: checkpoint => { translation = checkpoint; },
+        } : undefined);
       completed = true;
     } else {
       const history: ChatMessage[] = [...input.messages];
-      if (resume) {
+      if (resume && partial.trim()) {
         const sources = toolCalls.filter(tool => tool.status === 'done').map(tool => String(tool.result).slice(0, 2400));
         history.push({ role: 'assistant', content: partial }, { role: 'user',
           content: '从上一段结尾直接续写，避免重复。' + (sources.length ? '\n前次工具结果：\n' + sources.join('\n') : '') });
@@ -154,16 +202,32 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
         send(event);
       }, ac.signal, provider, input.knowledge, input.dossier, input.tavilyKey);
     }
-  } catch {
+  } catch (error) {
     // Do not expose upstream response bodies, prompts, or supplier diagnostics.
-    failure = input.workflow ? '未取得通过格式和引文核验的报告，请核对资料后重试。' : '模型生成失败，请稍后重试。';
+    segmentEnded = error instanceof ReportNeedsContinuation || error instanceof TranslationNeedsContinuation;
+    if (!segmentEnded && !ac.signal.aborted) failure = error instanceof DocumentToolError ? error.message
+      : input.workflow ? '未取得通过格式和引文核验的报告，请核对资料后重试。' : '模型生成失败，请稍后重试。';
   } finally {
     clearTimeout(deadline); clearInterval(heartbeat);
-    const canResume = timedOut && !input.workflow && content.length > partial.length && input.allowResume;
-    if (canResume) failure = '';
-    else if (timedOut) failure = '生成超过 100 秒，已保存已收到的内容。';
-    const status = canResume ? 'interrupted' : failure ? 'failed' : ac.signal.aborted && !completed ? 'interrupted' : 'complete';
-    assistant.content = content || (failure ? `⚠️ ${failure}` : '');
+    const autoResume = timedOut && !manual && !input.workflow && !input.documentTool
+      && content.length > partial.length && input.allowResume;
+    const paused = !completed && input.documentTool?.name !== 'file_parse' && (input.workflow || manual)
+      && (timedOut || segmentEnded || !!(failure && content && content !== partial));
+    if (paused) {
+      assistant.continuation = { model: input.model, workflow: input.workflow, reportDraft, documentTool: input.documentTool, translation };
+      failure = '';
+    } else if (timedOut && !autoResume) {
+      failure = content.trim() ? '本段生成时间已用完，已收到的正文会尽力保存。' : '本段暂未收到正文，请重试。';
+    }
+    if (resume && savedContinuation && !completed && !paused) {
+      // Keep the last saved checkpoint available if the next request was cancelled or failed.
+      assistant.continuation = { ...savedContinuation, reportDraft, translation };
+    } else if (!paused) {
+      delete assistant.continuation;
+    }
+    const status = paused || autoResume || (resume && savedContinuation && !completed)
+      ? 'interrupted' : failure ? 'failed' : ac.signal.aborted && !completed ? 'interrupted' : 'complete';
+    assistant.content = content || (!paused && !assistant.continuation && failure ? '⚠️ ' + failure : '');
     assistant.status = status;
     assistant.toolCalls = toolCalls;
     stored.updatedAt = Date.now();
@@ -172,7 +236,7 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
         p_id: input.conversationId, p_run: runId, p_payload: stored,
       });
       send({ type: 'saved', record: saved });
-      if (canResume) send({ type: 'resume', revision: saved.revision });
+      if (autoResume) send({ type: 'resume', revision: saved.revision });
       if (failure) send({ type: 'error', message: failure });
       send({ type: 'done' });
     } catch {

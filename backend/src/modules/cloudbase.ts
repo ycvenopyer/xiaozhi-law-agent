@@ -2,6 +2,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { env } from '../config/env';
 import { AppError } from '../middleware/errorHandler';
 
+export const CLOUD_REQUEST_TIMEOUT_MS = 15_000;
+
 export interface CloudIdentity { id: string; token: string; email?: string }
 export interface UserRecord {
   kind: string; id: string; payload: Record<string, unknown>; revision: number;
@@ -12,8 +14,9 @@ export function gateway() {
 }
 
 export async function cloudFetch<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
+  const timeout = AbortSignal.timeout(CLOUD_REQUEST_TIMEOUT_MS);
   const response = await fetch(`${gateway()}${path}`, {
-    ...init, signal: init.signal ?? AbortSignal.timeout(15_000),
+    ...init, signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
     headers: { 'Content-Type': 'application/json', apikey: env.CLOUDBASE_PUBLISHABLE_KEY!,
       Authorization: `Bearer ${token}`, ...init.headers },
   });
@@ -50,6 +53,6 @@ export async function getRecord(token: string, kind: string, id: string): Promis
   return result[0];
 }
 
-export function recordRpc<T>(token: string, name: string, body: unknown): Promise<T> {
-  return cloudFetch(`/v1/rdb/rest/rpc/${name}`, token, { method: 'POST', body: JSON.stringify(body) });
+export function recordRpc<T>(token: string, name: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return cloudFetch(`/v1/rdb/rest/rpc/${name}`, token, { method: 'POST', body: JSON.stringify(body), signal });
 }

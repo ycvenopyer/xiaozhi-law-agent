@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Calculator, Clock, BookOpen, Wrench, ChevronDown, Loader2 } from 'lucide-react';
+import { Search, Calculator, Clock, BookOpen, Wrench, ChevronDown, Loader2, FileText, Languages } from 'lucide-react';
 import type { ToolCallView } from '@/types/agent';
 import { TOOL_META } from '@/types/agent';
 
@@ -9,6 +9,8 @@ const ICONS: Record<string, typeof Calculator> = {
   Clock,
   BookOpen,
   Wrench,
+  FileText,
+  Languages,
 };
 
 function ToolIcon({ name }: { name: string }) {

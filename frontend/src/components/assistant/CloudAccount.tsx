@@ -177,7 +177,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
   const sync = useSyncExternalStore(subscribeSync, getSyncStatus);
   const [guiding, setGuiding] = useState(() => !loadCollection<{ id: string }>('settings').some(item => item.id === 'welcome-v1'));
   const [dialog, setDialog] = useState<'settings' | 'help' | null>(guiding ? 'settings' : null);
-  const [section, setSection] = useState<'privacy' | 'account' | 'appearance' | 'search'>('privacy');
+  const [section, setSection] = useState<'privacy' | 'account' | 'appearance' | 'search' | 'files'>('privacy');
   const [external, setExternal] = useState(getPrivacy);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -248,7 +248,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
           <div><h3 className="font-medium">配置自己的模型</h3><p className="text-muted-foreground">从模型菜单打开「自定义模型」，填写厂商、接口地址、模型 ID 和 API Key，可先测试连通性。</p></div>
           <div><h3 className="font-medium">检索今日知产新闻</h3><p className="text-muted-foreground">在「设置 → 联网搜索」保存 Tavily API Key，支持工具调用的模型即可在对话中检索网页，也可以到事务台检索当天的知产动态。搜索使用你的 Tavily 额度。</p></div>
           <div><h3 className="font-medium">调整阅读外观</h3><p className="text-muted-foreground">进入「设置 → 界面外观」，拖动字号滑块或直接输入 1–48 的整数。中文和英文可分别选择字体，设置保存在当前浏览器。</p></div>
-          <div><h3 className="font-medium">下载已保存的附件</h3><p className="text-muted-foreground">在「设置 → 账号与隐私」中下载当前账号已保存的文件原件。</p></div>
+          <div><h3 className="font-medium">下载已保存的附件</h3><p className="text-muted-foreground">在「设置 → 文件下载」中下载当前账号已保存的文件原件。</p></div>
         </div> : <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[9rem_minmax(0,1fr)] sm:grid-rows-1">
           <nav aria-label="设置分类" hidden={guiding} className={guiding ? 'hidden' : "grid grid-cols-2 gap-1 border-b border-border bg-muted/30 p-2 sm:flex sm:flex-col sm:border-b-0 sm:border-r"}>
             {([
@@ -256,12 +256,30 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
               ['account', '登录账号', LockKeyhole],
               ['appearance', '界面外观', Palette],
               ['search', '联网搜索', Search],
-            ] as const).map(([id, label, Icon]) => <button type="button" key={id} aria-pressed={section === id} disabled={busy} onClick={() => setSection(id)} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${section === id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="size-4" />{label}</button>)}
+              ['files', '文件下载', Download],
+            ] as const).map(([id, label, Icon]) => <button type="button" key={id} aria-pressed={section === id} disabled={busy} onClick={() => { setError(''); setSection(id); }} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${section === id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="size-4" />{label}</button>)}
           </nav>
           <div className={guiding ? "col-span-full row-span-full overflow-y-auto p-5" : "min-h-0 overflow-y-auto p-4 sm:p-5"}>
             {section === 'account' && <LoginSettings email={account.user.email} busy={busy} setBusy={setBusy} />}
             {section === 'appearance' && <AppearancePanel value={appearance} onChange={onAppearanceChange} />}
             {section === 'search' && <WebSearchSettings accountId={account.user.id} configured={searchConfigured} onChange={onSearchKeyChange} />}
+            {section === 'files' && <section aria-labelledby="saved-files-title" className="overflow-hidden rounded-xl border border-border">
+              <div className="border-b border-border bg-muted/30 p-4">
+                <h3 id="saved-files-title" className="text-sm font-semibold">已保存的文件原件</h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">文件通过私有存储权限验证后下载。</p>
+              </div>
+              {files.length ? <ul className="divide-y divide-border">
+                {files.map(file => <li key={file.id} className="flex items-center gap-3 px-4 py-3">
+                  <span className="min-w-0 flex-1 break-words text-sm">{file.name}</span>
+                  <button type="button" aria-label={`下载 ${file.name}`} disabled={busy}
+                    onClick={() => void act(() => downloadOriginal(file))}
+                    className={`${button} flex shrink-0 items-center gap-1.5`}>
+                    <Download className="size-3.5" />下载
+                  </button>
+                </li>)}
+              </ul> : <p className="p-4 text-sm text-muted-foreground">暂无已保存的文件。</p>}
+              {error && <p role="alert" className="border-t border-border p-4 text-sm text-destructive">{error}</p>}
+            </section>}
             {section === 'privacy' && <>
               <div className="rounded-xl border border-border p-4">
                 <h3 className="text-sm font-medium">第三方模型处理</h3>
@@ -277,7 +295,6 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
                   });
                 }} />我允许第三方模型处理工作资料</label>
               </div>
-              {!guiding && <div className="mt-4 rounded-xl border border-border p-4"><h3 className="text-sm font-medium">已保存的文件原件</h3><p className="my-2 text-xs text-muted-foreground">文件通过私有存储权限验证后下载。</p><ul className="max-h-40 space-y-2 overflow-y-auto">{files.map(file => <li key={file.id} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate">{file.name}</span><button aria-label={`下载 ${file.name}`} disabled={busy} onClick={() => void act(() => downloadOriginal(file))}><Download className="h-4 w-4" /></button></li>)}</ul></div>}
               {(error || sync.error) && <p role="alert" className="mt-3 text-sm text-destructive">{error || sync.error}</p>}
               {sync.error && <button className={`${button} mt-3`} onClick={exportRecovery}>导出未保存资料备份</button>}
             </>}

@@ -1,9 +1,8 @@
 import { useState, type FormEvent } from 'react'
-import { Markdown } from './Markdown'
 import { PatentScreen } from './PatentScreen'
-import { downloadReport } from '@/lib/report-export'
+import { ReportPreview } from './ReportPreview'
 import { lawStatus, type KBEntry } from '@/lib/knowledge'
-import type { WorkbenchMode } from '@/lib/agent-client'
+import type { WorkbenchGenerate, WorkbenchMode } from '@/lib/agent-client'
 
 import { choices, fieldNames, type WorkflowPrefill } from '../../../../shared/workflow-fields.mjs'
 
@@ -22,12 +21,33 @@ const checklist = [
 ]
 const input =
   'mt-1.5 block w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none'
-const button =
-  'rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-45'
-function Checklist({ values }: { values?: Record<string, string> }) {
+function useWorkflowReport(onGenerate: WorkbenchGenerate, mode: WorkbenchMode) {
+  const [report, setReport] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function generate(prompt: string) {
+    if (busy) return
+    setReport('')
+    setError('')
+    setBusy(true)
+    try {
+      setReport(await onGenerate(prompt, setReport, { workflow: mode }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '生成失败，请重试。')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return { report, busy, error, generate }
+}
+
+function Checklist({ values, onGenerate }: { values?: Record<string, string>; onGenerate: WorkbenchGenerate }) {
   const [checked, setChecked] = useState<string[]>([])
   const [project, setProject] = useState(values?.['项目名称'] || '')
   const [selected, setSelected] = useState<string[]>(values?.['项目情况']?.split('|') || [])
+  const [confirmed, setConfirmed] = useState(false)
+  const { report, busy, error, generate } = useWorkflowReport(onGenerate, 'compliance')
   const tasks: Record<string, [string, string]> = {
     使用开源组件: ['软件分发', '记录组件版本、许可证、修改和分发方式，核对署名与源代码交付条件'],
     计划申请专利: ['专利申请', '核对发明人贡献、申请权归属和首次公开计划'],
@@ -36,8 +56,21 @@ function Checklist({ values }: { values?: Record<string, string> }) {
   }
   const items = [...checklist, ...selected.filter(task => Object.hasOwn(tasks, task)).map(task => tasks[task])]
   const count = items.filter(([s]) => checked.includes(s)).length
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!confirmed) return
+    const facts = [
+      '研发合规清单',
+      '项目名称：' + (project.trim() || '待补充'),
+      '项目情况：' + (selected.join('、') || '待补充'),
+      ...items.map(([stage, item]) => '- ' + stage + '：' + item + '（' + (checked.includes(stage) ? '已勾选' : '待核实') + '）'),
+    ]
+    void generate(facts.join('\n'))
+  }
   return (
-    <div className="space-y-3">
+    <form onSubmit={submit} className="space-y-3">
+      <fieldset disabled={busy} className="space-y-3">
       <h3 className="font-medium">研发全流程自查</h3>
       <label>
         项目名称（可选）
@@ -73,24 +106,19 @@ function Checklist({ values }: { values?: Record<string, string> }) {
           </span>
         </label>
       ))}
-      <button
-        className={button}
-        onClick={() =>
-          void downloadReport(
-            '研发合规检查清单',
-            '# 研发合规检查清单\n\n' +
-              project +
-              '\n\n' +
-              items
-                .map(([s, i]) => '- [' + (checked.includes(s) ? 'x' : ' ') + '] ' + s + ' · ' + i)
-                .join('\n') +
-              '\n\n需人工复核'
-          )
-        }
-      >
-        导出清单（{count}/{items.length}）
-      </button>
-    </div>
+        <p className="text-xs text-muted-foreground">已勾选 {count}/{items.length} 项</p>
+        <label className="flex items-start gap-2 text-xs leading-5">
+          <input type="checkbox" className="mt-1" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />
+          我已脱敏，同意将本次材料交给所选模型并保存至当前账号的对话历史。
+        </label>
+        <button disabled={!confirmed}
+          className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-45">
+          {busy ? '正在生成合规提示…' : '生成合规提示初稿'}
+        </button>
+      </fieldset>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {report && <ReportPreview report={report} title="研发合规提示初稿" busy={busy} />}
+    </form>
   )
 }
 
@@ -140,11 +168,6 @@ function LocalSearch({ entries }: { entries: KBEntry[] }) {
     </section>
   )
 }
-type Generate = (
-  prompt: string,
-  onToken: (text: string) => void,
-  workflow?: WorkbenchMode
-) => Promise<string>
 function AnalysisForm({
   mode,
   initialValues,
@@ -154,30 +177,17 @@ function AnalysisForm({
   mode: WorkbenchMode
   task: string
   initialValues?: Record<string, string>
-  onGenerate: Generate
+  onGenerate: WorkbenchGenerate
 }) {
   const labels = fieldNames(mode, task)
   const [values, setValues] = useState<Record<string, string>>(initialValues || {})
   const [confirmed, setConfirmed] = useState(false)
-  const [report, setReport] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  async function submit(e: FormEvent) {
+  const { report, busy, error, generate } = useWorkflowReport(onGenerate, mode)
+  function submit(e: FormEvent) {
     e.preventDefault()
     if (!confirmed || busy) return
-    setError('')
-    setReport('')
-    setBusy(true)
-    try {
-      const prompt = [task, ...labels.map(l => l + '：' + (values[l]?.trim() || '待补充'))].join(
-        '\n\n'
-      )
-      setReport(await onGenerate(prompt, setReport, mode))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '生成失败，请重试。')
-    } finally {
-      setBusy(false)
-    }
+    const prompt = [task, ...labels.map(l => l + '：' + (values[l]?.trim() || '待补充'))].join('\n\n')
+    void generate(prompt)
   }
   return (
     <form onSubmit={submit} className="space-y-3">
@@ -218,25 +228,7 @@ function AnalysisForm({
           {error}
         </p>
       )}
-      {report && (
-        <section className="rounded-lg border p-3 text-sm">
-          <Markdown content={report} />
-          <div className="mt-3 flex gap-2">
-            {(['md', 'docx'] as const).map(fmt => (
-              <button
-                type="button"
-                className={button}
-                key={fmt}
-                onClick={() =>
-                  void downloadReport(task, report, fmt).catch(() => setError('导出失败，请重试。'))
-                }
-              >
-                导出 {fmt === 'md' ? 'Markdown' : 'Word'}
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
+      {report && <ReportPreview key={task} title={task} report={report} busy={busy} />}
     </form>
   )
 }
@@ -250,7 +242,7 @@ export function IpWorkflow({
   mode: WorkbenchMode
   entries: KBEntry[]
   prefill?: WorkflowPrefill
-  onGenerate: Generate
+  onGenerate: WorkbenchGenerate
 }) {
   const [task, setTask] = useState(prefill?.task || choices[mode][0])
   const initialValues = task === prefill?.task ? prefill.values : undefined
@@ -267,7 +259,7 @@ export function IpWorkflow({
       {task === '专利 FTO 初筛' || task === '专利检索提示' ? (
         <PatentScreen values={initialValues} />
       ) : task === '研发合规清单' ? (
-        <Checklist values={initialValues} />
+        <Checklist values={initialValues} onGenerate={onGenerate} />
       ) : (
         <>
           {mode === 'compare' && <LocalSearch entries={entries} />}

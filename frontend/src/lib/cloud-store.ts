@@ -60,6 +60,10 @@ export function acceptRecord(record: CloudRecord) {
   records.set(key(record.kind, record.id), clone(record));
 }
 
+export function conversationRevision(id: string) {
+  return records.get(key('sessions', id))?.revision;
+}
+
 export async function refreshConversation(id: string) {
   for (let attempt = 0; attempt < 30; attempt++) {
     const result = await pgRequest<CloudRecord[]>(`user_records?kind=eq.sessions&id=eq.${encodeURIComponent(id)}&select=kind,id,payload,revision,generation_id&limit=1`);
@@ -87,9 +91,17 @@ export function stageRecovery(kind: Collection, items: Array<{ id: string }>) {
 }
 
 /** Serialize writes and use database revisions: stale tabs never silently overwrite data. */
-export function saveCollection<T extends { id: string }>(kind: Collection, items: T[], deleteMissing = true): Promise<void> {
+export function saveCollection<T extends { id: string }>(
+  kind: Collection, items: T[], deleteMissing = true, skipIds?: ReadonlySet<string>,
+): Promise<void> {
   const snapshot = persistable(items) as Array<T & Record<string, unknown>>;
-  desired.set(kind, snapshot);
+  if (deleteMissing) {
+    desired.set(kind, snapshot);
+  } else {
+    const pending = new Map((desired.get(kind) || []).map(item => [item.id, item]));
+    snapshot.forEach(item => pending.set(item.id, item));
+    desired.set(kind, [...pending.values()]);
+  }
   const epoch = generation;
   const userId = owner;
   pendingCount++;
@@ -100,6 +112,7 @@ export function saveCollection<T extends { id: string }>(kind: Collection, items
     const ids = new Set(snapshot.map(item => item.id));
     for (const item of snapshot) {
       if (epoch !== generation) return;
+      if (skipIds?.has(item.id)) continue;
       const old = records.get(key(kind, item.id));
       if (old && JSON.stringify(old.payload) === JSON.stringify(item)) continue;
       const result = await pgRequest<CloudRecord>('rpc/put_user_record', {
@@ -108,7 +121,7 @@ export function saveCollection<T extends { id: string }>(kind: Collection, items
       });
       if (epoch === generation) acceptRecord(result);
     }
-    for (const old of [...records.values()].filter(row => deleteMissing && row.kind === kind && !ids.has(row.id))) {
+    for (const old of [...records.values()].filter(row => deleteMissing && row.kind === kind && !ids.has(row.id) && !skipIds?.has(row.id))) {
       if (epoch !== generation) return;
       await pgRequest('rpc/delete_user_record', { method: 'POST',
         body: JSON.stringify({ p_kind: kind, p_id: old.id, p_revision: old.revision }) });
@@ -128,8 +141,8 @@ export async function flushCloudStore() {
   if (status.error) throw new Error(status.error);
 }
 
-export function saveInBackground<T extends { id: string }>(kind: Collection, items: T[]) {
-  void saveCollection(kind, items).catch(() => { /* surfaced by account sync status */ });
+export function saveInBackground<T extends { id: string }>(kind: Collection, items: T[], skipIds?: ReadonlySet<string>) {
+  void saveCollection(kind, items, true, skipIds).catch(() => { /* surfaced by account sync status */ });
 }
 
 export function getPrivacy() {
