@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent } from 'react';
+import { useRef, useState, type KeyboardEvent } from 'react';
 import { Paperclip, Send, Square, X, FileText, ScanSearch, Fingerprint, ShieldCheck, FilePenLine, FileSignature } from 'lucide-react';
 import type { AttachedFile, ModelInfo } from '@/types/agent';
 import { ModelSelector } from './ModelSelector';
@@ -12,7 +12,8 @@ interface Props {
   onChange: (v: string) => void;
   onSend: () => void;
   onStop: () => void;
-  onFiles: (files: FileList) => void;
+  uploading: boolean;
+  onFiles: (files: File[]) => void;
   files: AttachedFile[];
   onRemoveFile: (id: string) => void;
   streaming: boolean;
@@ -30,19 +31,45 @@ interface Props {
 }
 
 export function ChatInput(props: Props) {
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   function handleKey(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      if (!props.streaming) props.onSend();
+      if (!props.streaming && !props.uploading && !props.disabled) props.onSend();
     }
   }
 
   return (
     <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-5">
-      <div className="relative rounded-2xl border border-border bg-card shadow-sm">
+      <div
+        className={`relative rounded-2xl border bg-card shadow-sm ${dragging ? 'border-primary ring-2 ring-primary/30' : 'border-border'}`}
+        onDragOver={event => {
+          if (!event.dataTransfer.types.includes('Files')) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = props.disabled ? 'none' : 'copy';
+          setDragging(!props.disabled);
+        }}
+        onDragLeave={event => {
+          if (!(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setDragging(false);
+        }}
+        onDrop={event => {
+          if (!event.dataTransfer.types.includes('Files')) return;
+          event.preventDefault();
+          setDragging(false);
+          if (!props.disabled) props.onFiles(Array.from(event.dataTransfer.files));
+        }}
+        onPaste={event => {
+          const data = event.clipboardData;
+          const files = data.files.length ? Array.from(data.files) : Array.from(data.items)
+            .filter(item => item.kind === 'file').map(item => item.getAsFile()).filter((file): file is File => file !== null);
+          if (!files.length) return;
+          event.preventDefault();
+          if (!props.disabled) props.onFiles(files);
+        }}
+      >
+        {dragging && <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-card/95 text-sm text-primary">松开即可添加附件</div>}
 
         {props.files.length > 0 && (
           <div className="flex flex-wrap gap-2 px-3 pt-3">
@@ -59,6 +86,7 @@ export function ChatInput(props: Props) {
                   />
                   <span className="max-w-[120px] truncate text-[0.78rem]">{f.name}</span>
                   <button
+                    aria-label={`移除 ${f.name}`}
                     onClick={() => props.onRemoveFile(f.id)}
                     className="text-muted-foreground hover:text-foreground"
                   >
@@ -74,6 +102,7 @@ export function ChatInput(props: Props) {
                   <span className="max-w-[160px] truncate">{f.name}</span>
                   <span className="text-muted-foreground">{Math.round(f.size / 1024)}KB</span>
                   <button
+                    aria-label={`移除 ${f.name}`}
                     onClick={() => props.onRemoveFile(f.id)}
                     className="text-muted-foreground hover:text-foreground"
                   >
@@ -89,7 +118,8 @@ export function ChatInput(props: Props) {
           <button
             onClick={() => fileRef.current?.click()}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="上传文档"
+            disabled={props.disabled}
+            title="添加图片或文件（支持拖入或粘贴）"
           >
             <Paperclip className="h-4 w-4" />
           </button>
@@ -118,9 +148,9 @@ export function ChatInput(props: Props) {
             type="file"
             className="hidden"
             multiple
-            accept="image/*,.pdf,.txt,.md,.doc,.docx"
+            accept="image/png,image/jpeg,image/webp,.pdf,.txt,.md,.markdown,.csv,.doc,.docx"
             onChange={(e) => {
-              if (e.target.files) props.onFiles(e.target.files);
+              if (e.target.files) props.onFiles(Array.from(e.target.files));
               e.target.value = '';
             }}
           />
@@ -128,7 +158,6 @@ export function ChatInput(props: Props) {
 
         <div className="px-3 pb-1 pt-2">
           <textarea
-            ref={taRef}
             value={props.value}
             onChange={(e) => props.onChange(e.target.value)}
             onKeyDown={handleKey}
@@ -150,7 +179,7 @@ export function ChatInput(props: Props) {
           ) : (
             <button
               onClick={props.onSend}
-              disabled={props.disabled}
+              disabled={props.disabled || props.uploading}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
               title="发送"
             >
@@ -160,7 +189,7 @@ export function ChatInput(props: Props) {
         </div>
       </div>
       <p className="mt-1.5 text-center text-[0.7rem] text-muted-foreground">
-        Enter 发送 · Shift+Enter 换行 · 内容由 AI 生成，请自行核实
+        <span role="status">{props.uploading ? '正在添加附件…' : '可拖入或粘贴附件'}</span> · Enter 发送 · Shift+Enter 换行 · 内容由 AI 生成，请自行核实
       </p>
     </div>
   );

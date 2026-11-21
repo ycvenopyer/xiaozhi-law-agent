@@ -33,9 +33,10 @@ import { conversationRevision, getPrivacy, loadCollection, refreshConversation, 
 interface ComposerDraft {
   text: string;
   files: AttachedFile[];
+  pendingUploads: number;
 }
 
-const emptyDraft: ComposerDraft = { text: '', files: [] };
+const emptyDraft: ComposerDraft = { text: '', files: [], pendingUploads: 0 };
 
 function makeMsg(role: ChatMessage['role'], content = ''): ChatMessage {
   return { id: crypto.randomUUID(), role, content, createdAt: Date.now() };
@@ -68,7 +69,7 @@ export default function Index() {
   const [sidebarOpen, setSidebarOpen] = useState(() => window.matchMedia('(min-width: 768px)').matches);
   const [currentId, setCurrentId] = useState(initial.currentId);
   const [drafts, setDrafts] = useState<Record<string, ComposerDraft>>({});
-  const { text: input, files } = drafts[currentId] || emptyDraft;
+  const { text: input, files, pendingUploads } = drafts[currentId] || emptyDraft;
   const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(() => new Set());
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [customModels, setCustomModels] = useState(() => loadCustomModels(accountId));
@@ -314,36 +315,26 @@ export default function Index() {
     if (projectViewId === id) setProjectViewId(null);
   }
 
-  const handleFiles = useCallback(async (list: FileList) => {
+  const handleFiles = useCallback(async (list: File[]) => {
+    if (!list.length) return;
     const added: AttachedFile[] = [];
-    for (const f of Array.from(list)) {
-      if (f.type.startsWith('image/')) {
-        try {
-          const stored = await uploadFile(f);
-          const dataUrl = await fileToImageDataUrl(f);
-          added.push({
-            ...stored,
-            name: f.name,
-            size: f.size,
-            kind: 'image',
-            dataUrl,
-            text: '',
-            charCount: 0,
-            truncated: false,
-            type: f.type,
-          });
-        } catch (error) {
-          showNote(error instanceof Error ? error.message : '图片上传失败');
+    updateDraft(currentId, draft => ({ ...draft, pendingUploads: draft.pendingUploads + 1 }));
+    for (const file of list) {
+      try {
+        if (!/^image\/(png|jpeg|webp)$/i.test(file.type) && !/\.(pdf|docx?|txt|md|markdown|csv|jpe?g|png|webp)$/i.test(file.name)) {
+          throw new Error(`${file.name}：请选择 PDF、Word、文本、CSV 或 PNG、JPEG、WebP 图片。`);
         }
-      } else {
-        try {
-          added.push(await uploadFile(f));
-        } catch (error) {
-          showNote(error instanceof Error ? error.message : '文件上传失败');
-        }
+        const stored = await uploadFile(file);
+        added.push(stored.kind === 'image' ? { ...stored, dataUrl: await fileToImageDataUrl(file) } : stored);
+      } catch (error) {
+        showNote(error instanceof Error ? error.message : '附件上传失败');
       }
     }
-    if (added.length) updateDraft(currentId, draft => ({ ...draft, files: [...draft.files, ...added] }));
+    setDrafts(previous => {
+      const draft = previous[currentId];
+      if (!draft) return previous;
+      return { ...previous, [currentId]: { ...draft, files: [...draft.files, ...added], pendingUploads: draft.pendingUploads - 1 } };
+    });
   }, [currentId, updateDraft]);
 
   const removeFile = useCallback((id: string) => {
@@ -480,8 +471,9 @@ export default function Index() {
   }, [current, modelRequest, runGeneration]);
 
   const handleSend = useCallback(() => {
+    if (pendingUploads) return;
     submit(input.trim(), files, undefined, () => updateDraft(currentId, () => emptyDraft));
-  }, [currentId, input, files, submit, updateDraft]);
+  }, [currentId, input, files, pendingUploads, submit, updateDraft]);
 
   const stop = useCallback(() => {
     generationJobs.current.get(currentId)?.abort();
@@ -568,7 +560,7 @@ export default function Index() {
         onDeleteProject={deleteProject}
         onOpenProject={openProject}
         right={appearance.sidebarSide === 'right'}
-        footer={<AccountControls disabled={runningIds.size > 0} appearance={appearance} onAppearanceChange={setAppearance}
+        footer={<AccountControls disabled={runningIds.size > 0 || Object.values(drafts).some(draft => draft.pendingUploads > 0)} appearance={appearance} onAppearanceChange={setAppearance}
           searchConfigured={searchConfigured} onSearchKeyChange={setSearchConfigured} />}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -579,7 +571,7 @@ export default function Index() {
           {!sidebarOpen && <button type="button" onClick={() => setSidebarOpen(true)} aria-label="展开侧边栏" className="mr-1 rounded-lg p-1.5 text-muted-foreground hover:bg-muted"><PanelLeftOpen className="h-4 w-4" /></button>}
           <span className="text-sm font-semibold">小知</span>
           {currentProject && <><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button type="button" onClick={() => openProject(currentProject.id)} className="max-w-40 truncate rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-muted">{currentProject.name}</button></>}
-          <span className="text-[0.72rem] text-muted-foreground">知识产权办案助理</span>
+          <span className="text-[0.72rem] text-muted-foreground">知识产权合规助理</span>
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.7rem] text-primary">
             私人云端空间
           </span>
@@ -630,6 +622,7 @@ export default function Index() {
           onChange={setInput}
           onSend={handleSend}
           onStop={stop}
+          uploading={pendingUploads > 0}
           onFiles={handleFiles}
           files={files}
           onRemoveFile={removeFile}

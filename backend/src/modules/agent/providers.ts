@@ -46,15 +46,6 @@ export const MODEL_REGISTRY: ModelProvider[] = [
     free: true,
     vision: true,
   },
-  {
-    id: 'zhipu-air',
-    label: '智谱 GLM-4.5-Air',
-    baseUrl: ZHIPU_BASE,
-    model: 'glm-4.5-air',
-    apiKey: env.ZHIPU_API_KEY || '',
-    free: false,
-    vision: false,
-  },
 ];
 
 /** Lightweight list for the UI (no secrets). */

@@ -24,6 +24,12 @@ export const cloud = cloudConfig.key ? cloudbase.init({
   persistence: 'session',
 }) : null;
 
+export function usernameFormatError(name: string) {
+  if (Array.from(name).length > 256) return '登录用户名最长为 256 个字符。'
+  if (/[^A-Za-z0-9〇\p{Unified_Ideograph}]/u.test(name)) return '仅可使用中文汉字、英文字母和数字。'
+  return ''
+}
+
 export function requireCloud() {
   if (!cloud) throw new Error(cloudConfig.error || '请先配置 Publishable Key（完整值或 PART 分段），再重新构建网站。');
   return cloud;
@@ -39,12 +45,12 @@ export async function authHeaders(): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${await accessToken()}` };
 }
 
-export async function pgRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function pgRequest<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const res = await fetch(`https://${cloudConfig.env}.api.tcloudbasegateway.com/v1/rdb/rest/${path}`, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(20_000),
     headers: { 'Content-Type': 'application/json', apikey: cloudConfig.key,
-      ...await authHeaders(), ...init.headers },
+      ...(token ? { Authorization: `Bearer ${token}` } : await authHeaders()), ...init.headers },
     cache: 'no-store',
   });
   if (!res.ok) {

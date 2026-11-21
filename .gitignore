@@ -14,6 +14,8 @@ coverage/
 __pycache__/
 logs/
 *.log
+*-debug.log*
+yarn-error.log*
 *.tsbuildinfo
 
 # Local editor and operating system files
@@ -23,11 +25,6 @@ Thumbs.db
 desktop.ini
 
 # Workspace-specific editor files, local overrides and debug logs
-/frontend/**/node_modules
-/frontend/**/dist
-/frontend/**/dist-ssr
-/frontend/**/logs
-/frontend/**/.idea
 /frontend/**/*.local
 /frontend/.vscode/*
 !/frontend/.vscode/extensions.json
@@ -36,13 +33,6 @@ desktop.ini
 /frontend/**/*.njsproj
 /frontend/**/*.sln
 /frontend/**/*.sw?
-/frontend/**/npm-debug.log*
-/frontend/**/yarn-debug.log*
-/frontend/**/yarn-error.log*
-/frontend/**/pnpm-debug.log*
-/frontend/**/lerna-debug.log*
-/backend/**/npm-debug.log*
 /backend/**/.vscode/
 /backend/**/*.swp
 /backend/**/*.swo
-/backend/prisma/migrations/

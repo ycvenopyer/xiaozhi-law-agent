@@ -1,22 +1,23 @@
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { LockKeyhole, Mail, Loader2, Download, ChevronsUpDown, CircleHelp, LogOut, Palette, Search, Settings2, ShieldCheck } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AppearancePanel } from './AppearancePanel';
+import { RegisterDialog } from './RegisterDialog';
 import { LoginBrand } from './LoginBrand';
 import { LoginSettings } from './LoginSettings';
 import { WebSearchSettings } from './WebSearchSettings';
 import type { Appearance } from '@/lib/appearance';
 import { clearModelKeys } from '@/lib/custom-models';
 import { setTavilyKey } from '@/lib/tavily-key';
-import { cloud, cloudConfig, authHeaders, requireCloud } from '@/lib/cloudbase';
+import { cloud, cloudConfig, authHeaders, pgRequest, requireCloud } from '@/lib/cloudbase';
 import { clearCloudStore, exportRecovery, flushCloudStore, getPrivacy, getSyncStatus, hydrateCloudStore,
   loadCollection, saveCollection, subscribeSync } from '@/lib/cloud-store';
 import { downloadOriginal } from '@/lib/private-files';
 import type { AttachedFile } from '@/types/agent';
 
-interface Account { id: string; email?: string }
-const Context = createContext<{ user: Account; logout: () => Promise<void> } | null>(null);
+interface Account { id: string; email?: string; loginName?: string | null }
+const Context = createContext<{ user: Account; setLoginName: (name: string) => void; setEmail: (email: string) => void; logout: () => Promise<void> } | null>(null);
 export function useAccountId() {
   return useContext(Context)?.user.id || '';
 }
@@ -28,6 +29,8 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState('');
+  const [registering, setRegistering] = useState(false);
+  const [registered, setRegistered] = useState(false);
   const [mode, setMode] = useState<'otp' | 'password'>('otp');
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -39,12 +42,21 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   const [cooldown, setCooldown] = useState(0);
   const verify = useRef<((token: string) => Promise<void>) | null>(null);
 
+  const userId = user?.id;
+  const setLoginName = useCallback((loginName: string) => {
+    setUser(current => current && current.id === userId ? { ...current, loginName } : current);
+  }, [userId]);
+
   async function enter() {
     setRetryAccount(true);
     const response = await fetch('/api/auth/me', { headers: await authHeaders(), cache: 'no-store' });
     if (!response.ok) throw new Error(response.status === 401 ? '登录失效，请重新登录。' : '后端认证未就绪，请检查 EdgeOne 环境变量。');
     const account = await response.json() as Account;
-    await hydrateCloudStore(account.id);
+    const [name] = await Promise.all([
+      pgRequest<string | null>('rpc/my_login_name', { method: 'POST', body: '{}' }).catch(() => undefined),
+      hydrateCloudStore(account.id),
+    ]);
+    account.loginName = typeof name === 'string' ? name : name === null ? null : undefined;
     setRetryAccount(false);
     setUser(account);
   }
@@ -70,8 +82,8 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
   async function sendCode(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(''); setRetryAccount(false);
     try {
-      const result = await requireCloud().auth().signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
-      if (result.error) throw new Error(result.error.message);
+      const result = await requireCloud().auth().signInWithOtp({ email: email.trim(), options: { shouldCreateUser: false } });
+      if (result.error) throw new Error('验证码发送失败。请确认邮箱已注册，或稍后重试。');
       const callback = result.data?.verifyOtp;
       if (!callback) throw new Error('当前 SDK 未返回验证码校验方法，请检查 SDK 版本和邮箱登录配置。');
       verify.current = async token => {
@@ -127,13 +139,13 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
         clearModelKeys(user.id);
       }
     } finally {
-      setUser(null); clearCloudStore(); setSent(false); setCode(''); verify.current = null;
+      setUser(null); setRegistered(false); clearCloudStore(); setSent(false); setCode(''); verify.current = null;
       setPassword(''); setIdentifier(''); setEmail(''); setMode('otp'); setRetryAccount(false); setCooldown(0); setError('');
     }
   }
 
   if (loading) return <div className="flex min-h-screen items-center justify-center gap-2 bg-background text-sm"><Loader2 className="h-4 w-4 animate-spin" />正在读取账号与云端资料…</div>;
-  if (user) return <Context.Provider value={{ user, logout }}><div key={user.id}>{children}</div></Context.Provider>;
+  if (user) return <Context.Provider value={{ user, logout, setLoginName, setEmail: email => setUser(current => current && current.id === user.id ? { ...current, email } : current) }}><div key={user.id}>{children}</div></Context.Provider>;
   return <main className="grid min-h-dvh grid-rows-[auto_1fr] bg-background md:grid-cols-[minmax(0,1.12fr)_minmax(0,1fr)] md:grid-rows-1">
     <LoginBrand />
     <section className="flex min-w-0 items-center justify-center px-6 py-8 md:px-10 md:py-12">
@@ -158,7 +170,15 @@ export function CloudAccountGate({ children }: { children: ReactNode }) {
         </form>
         {sent && <div className="mt-3 flex gap-3 text-xs"><button disabled={busy || cooldown > 0} onClick={event => void sendCode(event)} className="disabled:opacity-40">{cooldown ? `${cooldown} 秒后可重发` : '重新发送'}</button><button disabled={busy} onClick={() => { setSent(false); setCode(''); verify.current = null; }}>更换邮箱</button></div>}
         {cloud && error && retryAccount && <button className={`${button} mt-3`} disabled={busy} onClick={() => { setBusy(true); void enter().catch(cause => setError(errorText(cause))).finally(() => setBusy(false)); }}>重试读取已登录账号</button>}
-        <div className="mt-8 flex items-start gap-2 border-t border-border pt-5 text-xs leading-5 text-muted-foreground"><LockKeyhole className="mt-0.5 h-4 w-4 shrink-0" />{mode === 'otp' ? '首次邮箱验证将创建账号。' : '首次使用或忘记密码？用邮箱验证码登录后，可在「设置 → 登录账号」设置密码。'}</div>
+        {registered && <p role="status" className="mt-3 text-sm text-primary">注册成功，请登录。</p>}
+        <div className="mt-6 flex items-center justify-center gap-2 border-t border-border pt-5 text-sm text-muted-foreground">
+          还没有账号？<button type="button" disabled={!cloud || busy} className="font-medium text-primary hover:underline"
+            onClick={() => { setRegistered(false); setRegistering(true); }}>注册账号</button>
+        </div>
+        {registering && <RegisterDialog initialEmail={mode === 'otp' ? email : identifier.includes('@') ? identifier : ''} onClose={() => setRegistering(false)} onComplete={address => {
+          setRegistering(false); setRegistered(true); setEmail(address); setIdentifier(address); setMode('password');
+          setPassword(''); setCode(''); setSent(false); setCooldown(0); setError(''); verify.current = null;
+        }} />}
       </div>
     </section>
   </main>;
@@ -196,7 +216,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
     finally { setBusy(false); }
   }
   const status = sync.error ? '保存失败' : sync.pending ? '保存中…' : '云端已同步';
-  const displayName = account.user.email || account.user.id;
+  const displayName = account.user.loginName || account.user.email || account.user.id;
   function closeSettings() {
     if (!guiding) { setDialog(null); return; }
     void act(async () => {
@@ -241,8 +261,8 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
           <button aria-label="关闭" disabled={busy} onClick={closeSettings} className="rounded-md px-2 text-lg leading-6 text-muted-foreground hover:bg-muted">×</button>
         </header>
         {dialog === 'help' ? <div className="space-y-4 overflow-y-auto p-5 text-sm leading-6">
-          <div><h3 className="font-medium">开始对话</h3><p className="text-muted-foreground">在设置里授权第三方模型处理，然后从输入框选择模型。检索法条和案例时，可通过知识库或普通附件提供参考材料。</p></div>
-          <div><h3 className="font-medium">从材料开始办案</h3><p className="text-muted-foreground">点击对话框的「上传文件填表」，选择 PDF、Word、TXT、Markdown 或图片，再选择用途。检索对比适合比较两份材料，侵权识别用于梳理权利基础和被诉行为，合规提示用于检查研发或合同风险，知产文书用于起草协议。导入会替换所选功能的草稿，请先核对字段再生成报告。</p></div>
+          <div><h3 className="font-medium">开始对话</h3><p className="text-muted-foreground">在设置里授权第三方模型处理，然后从输入框选择模型。检索法条和案例时，可通过知识库或普通附件提供参考材料。将图片或文件拖入输入框，或在输入框内粘贴，即可添加普通附件。</p></div>
+          <div><h3 className="font-medium">从材料开始合规审查</h3><p className="text-muted-foreground">点击对话框的「上传文件填表」，选择 PDF、Word、TXT、Markdown 或图片，再选择用途。检索对比适合比较两份材料，侵权识别用于梳理权利基础和被诉行为，合规提示用于检查研发或合同风险，知产文书用于起草协议。导入会替换所选功能的草稿，请先核对字段再生成报告。</p></div>
           <div><h3 className="font-medium">图片和扫描件</h3><p className="text-muted-foreground">文字版 PDF 可直接提取正文。照片和扫描页需在输入框选择支持图片的模型。每个文件最多 4 MiB，每次填表合计最多 4 万字和 8 张图片或扫描页。</p></div>
           <div><h3 className="font-medium">核对法律依据</h3><p className="text-muted-foreground">从右上角打开知识库，选择本次使用的材料。阅读报告时，可沿来源链接核对法规版本、施行日期和引用原文。报告中的待补充事项可作为下一轮提问的起点。</p></div>
           <div><h3 className="font-medium">配置自己的模型</h3><p className="text-muted-foreground">从模型菜单打开「自定义模型」，填写厂商、接口地址、模型 ID 和 API Key，可先测试连通性。</p></div>
@@ -260,7 +280,7 @@ export function AccountControls({ disabled = false, appearance, onAppearanceChan
             ] as const).map(([id, label, Icon]) => <button type="button" key={id} aria-pressed={section === id} disabled={busy} onClick={() => { setError(''); setSection(id); }} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${section === id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="size-4" />{label}</button>)}
           </nav>
           <div className={guiding ? "col-span-full row-span-full overflow-y-auto p-5" : "min-h-0 overflow-y-auto p-4 sm:p-5"}>
-            {section === 'account' && <LoginSettings email={account.user.email} busy={busy} setBusy={setBusy} />}
+            {section === 'account' && <LoginSettings onEmailSaved={account.setEmail} initialName={account.user.loginName} onSaved={account.setLoginName} email={account.user.email} busy={busy} setBusy={setBusy} />}
             {section === 'appearance' && <AppearancePanel value={appearance} onChange={onAppearanceChange} />}
             {section === 'search' && <WebSearchSettings accountId={account.user.id} configured={searchConfigured} onChange={onSearchKeyChange} />}
             {section === 'files' && <section aria-labelledby="saved-files-title" className="overflow-hidden rounded-xl border border-border">

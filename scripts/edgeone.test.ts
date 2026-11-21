@@ -259,7 +259,7 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
     await t.test('only the configured Zhipu models appear in the built-in catalogue', async () => {
       const response = await request(app).get('/api/agent/models').set(auth).expect(200)
       assert.deepEqual(response.body.map((model: { id: string }) => model.id), [
-        'zhipu-glm', 'zhipu-flash', 'zhipu-vision', 'zhipu-air',
+        'zhipu-glm', 'zhipu-flash', 'zhipu-vision',
       ])
       assert.deepEqual(response.body.filter((model: { free: boolean }) => model.free)
         .map((model: { id: string }) => model.id), ['zhipu-flash', 'zhipu-vision'])
@@ -267,7 +267,8 @@ test('EdgeOne authentication, persistence, upload and privacy boundaries', async
         model.provider === '智谱 AI' && model.available && !('apiKey' in model) && !('baseUrl' in model),
       ))
       record = makeRecord(); modelCalls = []
-      await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'zhipu-air' }).expect(200)
+      await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'zhipu-air' }).expect(400)
+      await request(app).post('/api/agent/chat').set(auth).send({ ...input, model: 'zhipu-flash' }).expect(200)
       assert.deepEqual(modelCalls, ['https://open.bigmodel.cn/api/paas/v4/chat/completions'])
       assert.equal(savedStatus, 'complete')
     })

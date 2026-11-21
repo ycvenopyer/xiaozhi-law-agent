@@ -2,7 +2,12 @@ import { requireCloud } from './cloudbase';
 import { currentOwner, saveCollection } from './cloud-store';
 import type { AttachedFile } from '@/types/agent';
 
-const documentContentTypes: Record<string, string> = {
+const attachmentContentTypes: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  csv: 'text/csv',
   pdf: 'application/pdf',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -17,7 +22,7 @@ export async function storeOriginal(file: File, id: string = crypto.randomUUID()
   if (!uid) throw new Error('请先登录。');
   const safeName = file.name.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-120) || 'attachment';
   const extension = /\.([a-z0-9]+)$/i.exec(file.name)?.[1].toLowerCase() || '';
-  const type = documentContentTypes[extension] || file.type || 'text/plain';
+  const type = attachmentContentTypes[extension] || file.type || 'text/plain';
   const path = `${uid}/${id}/${safeName}`;
   const bucket = requireCloud().storage.from('private-files');
   const { error } = await bucket.upload(path, file, { contentType: type, upsert: false });

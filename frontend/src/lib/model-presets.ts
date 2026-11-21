@@ -51,7 +51,6 @@ export const modelPresets = [
       model('glm-4.6', 'GLM-4.6'),
       model('glm-4.6v', 'GLM-4.6V', true),
       model('glm-4.6v-flash', 'GLM-4.6V-Flash', true),
-      model('glm-4.5-air', 'GLM-4.5-Air'),
     ],
   }),
   preset('DeepSeek', 'https://api.deepseek.com', 'https://api-docs.deepseek.com/api/list-models', 'deepseek-flash', {

@@ -6,12 +6,14 @@
 
 ## 已有环境升级
 
+**仅更新本次注册与登录页面**：如果现网已执行 `002_login_names.sql`，并已在后端配置同一环境的 `XIAOZHI_LOGIN_LOOKUP_KEY`，直接部署应用即可。邮箱、密码和验证码由 CloudBase 身份认证管理。换绑邮箱后，业务资料和账号名称仍关联原用户 ID。请用测试账号验证邮件送达和两种登录方式。
+
 已经完成 001 且原有检查全部 PASS 的环境，从下面第 1 步开始。全新环境先执行下节的 001，再回到这里。部署新版页面之前，在同一 CloudBase 环境的 SQL 编辑器中依次完整执行以下文件。
 
 1. [002_login_names.sql](../database/migrations/002_login_names.sql) 建立区分大小写的登录名称表、受限查询函数和环境专用查询密钥，并迁移可识别的已有用户名。
 2. [003_public_knowledge.sql](../database/migrations/003_public_knowledge.sql) 建立公共知识表及登录用户的只读权限。
 3. [004_word_originals.sql](../database/migrations/004_word_originals.sql) 允许在私有文件桶中保存旧版 Word（.doc）原件。
-3. [public_knowledge.sql](../database/seeds/public_knowledge.sql) 写入 158 条公共资料。重复执行只补充缺失的 ID，保留管理员已经修订的条目。运行下列查询核对首次初始化结果，依次应为 158、144、6、8。
+4. [public_knowledge.sql](../database/seeds/public_knowledge.sql) 写入 158 条公共资料。重复执行只补充缺失的 ID，保留管理员已经修订的条目。运行下列查询核对首次初始化结果，依次应为 158、144、6、8。
 
 ```sql
 SELECT count(*) AS total,
@@ -21,7 +23,7 @@ SELECT count(*) AS total,
 FROM public.knowledge_catalog;
 ```
 
-4. 用管理员身份在同一 SQL 编辑器运行下列查询。将返回值存入 EdgeOne Pages 的**后端环境变量** `XIAOZHI_LOGIN_LOOKUP_KEY`，发布新版应用。这个值只供后端解析登录名称，请勿放入 `VITE_*`、Git 或日志。已有 Publishable Key 继续使用。
+5. 用管理员身份在同一 SQL 编辑器运行下列查询。将返回值存入 EdgeOne Pages 的**后端环境变量** `XIAOZHI_LOGIN_LOOKUP_KEY`，发布新版应用。这个值只供后端解析登录名称，请勿放入 `VITE_*`、Git 或日志。已有 Publishable Key 继续使用。
 
 ```sql
 SELECT lookup_key FROM xiaozhi_private.login_config WHERE singleton;
@@ -115,9 +117,13 @@ EdgeOne [官方构建指南](https://pages.edgeone.ai/document/build-guide)规�
 
 项目使用根锁文件中现有的 CloudBase JS SDK **3.11.0**，OTP 流程是 `signInWithOtp` 返回 `data.verifyOtp`，不要混用 v4 的调用写法。
 
+新用户点击「注册账号」后填写名称、邮箱和密码。客户端申请并核验邮箱验证码，通过 CloudBase 的专用注册接口创建邮箱身份，再用新账号的临时凭证调用现有 `set_login_name`。该凭证仅保存在注册弹窗内存中。名称已占用时可在同一弹窗更换名称；若在邮箱创建后中断，可用邮箱登录，到设置中补全名称。成功后返回登录框。验证码登录设置 `shouldCreateUser: false`。 [CloudBase 注册接口](https://docs.cloudbase.net/http-api/auth/auth-sign-up)
+
+本次更新无需新增 SQL 迁移。已配置精确用户名登录的环境直接复用迁移 002 及原有后端查询密钥。已有用户沿用原用户 ID、用户名和业务记录。
+
 已有账号在「设置 → 登录账号」通过安全验证码设置或更改密码，也可以单独保存登录用户名。登录名支持 1–256 个汉字、英文字母或数字；完整字符串在环境内唯一，区分大小写。例如 `yc`、`YC`、`ycvenopyer` 和 `小知yc` 可属于不同账号。此前已绑定的账号仍可使用邮箱验证码登录。
 
-邮箱密码登录使用 CloudBase SDK。用户名密码登录由同源后端按完整名称解析账号，再交由 CloudBase 验证密码；后端核对返回用户的身份后才交付登录会话。小知数据库只保存名称与用户 ID 的绑定。
+邮箱密码登录使用 CloudBase SDK。用户名密码登录由同源后端按完整名称解析账号，再交由 CloudBase 验证密码；后端核对返回用户的身份后才交付登录会话。小知数据库只保存名称与用户 ID 的绑定。换绑邮件时使用 SDK 的 updateUser 发码至新邮箱，校验成功后更新显示。用户名登录按 UID 读取当前绑定邮箱。改密使用 reauthenticate 向已绑定邮箱发安全验证码。
 
 ## 4. 模型外发策略
 
@@ -184,7 +190,7 @@ npx tsc --noEmit --project backend/tsconfig.json --module esnext --moduleResolut
 6. 第三方模型处理关闭时，发送对话应被拒绝。开启后用测试文本检查已配置的内置模型，并在自定义模型页面检查实际厂商接口。
 7. 模型失败后确认请求仍使用所选模型。在「设置 → 联网搜索」配置测试 Tavily Key，关闭模型外发授权后确认「检索今日新闻」可独立工作。退出登录后确认当前标签页已清除 Key。
 8. 两个页面同时改同一条记录，旧版本保存应提示冲突。
-9. 核对同名保存提示、大小写不同的用户名分别登录，以及文件下载和生成中取消。
+9. 检查新邮箱无法直接验证码登录，再验证注册后返回登录框。用无用户名的旧账号登录，核对侧栏邮箱，保存用户名后核对侧栏名称，刷新或重新登录后再检查。核对同名保存提示、大小写不同的用户名分别登录，以及文件下载和生成中取消。
 10. 核对套餐、备份能力、恢复流程、使用量告警和到期行为，再放入真实敏感资料。
 
 配置好变量、迁移通过后仍需提交代码并触发 EdgeOne 部署；本地修改不会自动更新线上站点。

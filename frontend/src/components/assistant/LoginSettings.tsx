@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { pgRequest, requireCloud } from '@/lib/cloudbase'
+import { pgRequest, requireCloud, usernameFormatError } from '@/lib/cloudbase'
 
 const field =
   'mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary'
@@ -7,22 +7,22 @@ const button =
   'rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50'
 
 interface Props {
+  initialName?: string | null
+  onSaved: (name: string) => void
+  onEmailSaved: (email: string) => void
   email?: string
   busy: boolean
   setBusy: (value: boolean) => void
 }
 
-function usernameFormatError(name: string) {
-  if (Array.from(name).length > 256) return '登录用户名最长为 256 个字符。'
-  if (/[^A-Za-z0-9〇\p{Unified_Ideograph}]/u.test(name)) return '仅可使用中文汉字、英文字母和数字。'
-  return ''
-}
-
-export function LoginSettings({ email, busy, setBusy }: Props) {
-  const [username, setUsername] = useState('')
-  const [savedName, setSavedName] = useState('')
+export function LoginSettings({ email, onEmailSaved, busy, setBusy, initialName, onSaved }: Props) {
+  const [username, setUsername] = useState(initialName ?? '')
+  const [savedName, setSavedName] = useState(initialName ?? '')
   const [nameError, setNameError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(initialName === undefined)
+  const [nextEmail, setNextEmail] = useState('')
+  const [emailCode, setEmailCode] = useState('')
+  const [emailVerification, setEmailVerification] = useState<((code: string) => Promise<void>) | null>(null)
   const [challenge, setChallenge] = useState(0)
   const [resendReady, setResendReady] = useState(false)
   const [nonce, setNonce] = useState('')
@@ -34,6 +34,7 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
   const name = username
   const formatError = name !== savedName ? usernameFormatError(name) : ''
   useEffect(() => {
+    if (initialName !== undefined) return
     let active = true
     async function load() {
       const name = await pgRequest<string | null>('rpc/my_login_name', { method: 'POST', body: '{}' })
@@ -41,6 +42,8 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
       if (typeof name === 'string') {
         setSavedName(name)
         setUsername(name)
+        setLoading(false)
+        onSaved(name)
       }
     }
     void load()
@@ -53,7 +56,7 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
     return () => {
       active = false
     }
-  }, [])
+  }, [initialName, onSaved])
 
   useEffect(() => {
     if (!challenge) return
@@ -87,7 +90,40 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
       }
       setSavedName(name)
       setUsername(name)
+      onSaved(name)
       setNotice('用户名已保存。')
+    })
+  }
+
+  function changeEmail(event: FormEvent) {
+    event.preventDefault()
+    void run(async () => {
+      const address = nextEmail.trim()
+      if (emailVerification) {
+        await emailVerification(emailCode.trim())
+        setEmailVerification(null)
+        setNextEmail('')
+        setEmailCode('')
+        verify.current = null
+        setChallenge(0)
+        setNonce('')
+        setPassword('')
+        setConfirm('')
+        onEmailSaved(address)
+        setNotice('登录邮箱已更新。')
+        return
+      }
+      const result = await requireCloud().auth().updateUser({ email: address })
+      if (result.error) throw new Error('无法验证新邮箱，请检查地址是否已被使用。')
+      const verifyEmail = result.data && 'verifyOtp' in result.data && result.data.verifyOtp
+      if (!verifyEmail) throw new Error('未能发起邮箱验证，请重试。')
+      setEmailVerification(() => async (token: string) => {
+        const reply = await verifyEmail({ email: address, token })
+        if (reply.error || reply.data?.user?.email?.toLowerCase() !== address.toLowerCase()) {
+          throw new Error('邮箱换绑未确认，请核对验证码或重新获取。')
+        }
+      })
+      setNotice('验证码已发送到新邮箱。')
     })
   }
 
@@ -164,6 +200,19 @@ export function LoginSettings({ email, busy, setBusy }: Props) {
         >
           保存用户名
         </button>
+      </form>
+      <form className="space-y-3 rounded-xl border border-border p-4" onSubmit={changeEmail}>
+        <h3 className="text-sm font-medium">更换登录邮箱</h3>
+        <p className="text-xs text-muted-foreground">当前绑定邮箱：{email || '未绑定'}</p>
+        <label className="block text-sm">新邮箱<input className={field} type="email" required autoComplete="email"
+          disabled={busy || !!emailVerification} value={nextEmail} onChange={e => setNextEmail(e.target.value)} /></label>
+        {emailVerification && <label className="block text-sm">新邮箱验证码<input className={field} required autoComplete="one-time-code"
+          inputMode="numeric" disabled={busy} value={emailCode} onChange={e => setEmailCode(e.target.value)} /></label>}
+        <button className={button} disabled={busy || !nextEmail.trim() || nextEmail.trim().toLowerCase() === email?.toLowerCase()}>
+          {emailVerification ? '确认更换邮箱' : '验证新邮箱'}
+        </button>
+        {emailVerification && <button type="button" className={button} disabled={busy}
+          onClick={() => { setEmailVerification(null); setEmailCode(''); setNotice(''); setError('') }}>重新填写邮箱</button>}
       </form>
       <section className="space-y-3 rounded-xl border border-border p-4">
         <h3 className="text-sm font-medium">设置或更改密码</h3>

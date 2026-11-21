@@ -1,8 +1,8 @@
 const SUGGESTIONS = [
-  '帮我分析商标侵权案已有证据的证明力与缺口',
-  '草拟一段专利侵权的辩论意见要点',
-  '检索"著作权侵权 赔偿数额"相关法条与案例',
-  '上传一份判决书，帮我提炼裁判要旨',
+  '帮我比对两份商标材料，列出标识和商品类别的差异',
+  '产品宣传图用了他人作品，判断侵权风险还缺哪些事实？',
+  '产品准备发布，使用开源组件前要核对哪些许可条件？',
+  '帮我起草一份用于研发合作洽谈的保密协议',
 ];
 
 export function EmptyState({ onPick, avatar }: { onPick: (text: string) => void; avatar?: string }) {
@@ -13,9 +13,9 @@ export function EmptyState({ onPick, avatar }: { onPick: (text: string) => void;
         alt="小知"
         className="mb-4 h-14 w-14 rounded-2xl object-cover ring-1 ring-primary/20"
       />
-      <h2 className="text-xl font-semibold">你好，我是小知，你的知识产权办案助理</h2>
+      <h2 className="text-xl font-semibold">你好，我是小知，你的知识产权合规助理</h2>
       <p className="mt-1.5 text-center text-[0.9rem] text-muted-foreground">
-        可以帮你分析证据、撰写代理词、检索法条与案例、分析文书。试试下面的问题：
+        我可以帮你检索比对知产材料、识别侵权风险、梳理研发合规事项，也可以帮你起草知识产权文书。
       </p>
       <div className="mt-6 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
         {SUGGESTIONS.map((s) => (

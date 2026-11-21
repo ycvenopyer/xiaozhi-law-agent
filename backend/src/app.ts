@@ -9,14 +9,9 @@ import { env } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { httpLogger } from './middleware/logger'
 import { systemRouter } from './modules/system'
-import { agentRouter } from './modules/agent'
+import { agentRouter } from './modules/agent/router'
 import { requireIdentity, identity } from './modules/cloudbase'
 import { usernameLogin } from './modules/username-login'
-// ============================================
-// Add your domain module imports here
-// ============================================
-// Example: Product Module
-// import { productRouter } from './modules/product.js'
 
 export const createApp = (
   { serveFrontend = true, requestTimeoutMs }: {
@@ -62,13 +57,8 @@ export const createApp = (
     res.json({ id: user.id, email: user.email })
   })
 
-  // ============================================
-  // Add your domain module routes here
-  // ============================================
   // AI Agent module (chat streaming + file parsing)
   app.use(`${env.API_PREFIX}/agent`, requireIdentity, agentRouter)
-  // Example: Product Module
-  // app.use(`${env.API_PREFIX}/products`, productRouter)
 
   // Serve the built frontend in production (single-port deployment).
   if (serveFrontend) {

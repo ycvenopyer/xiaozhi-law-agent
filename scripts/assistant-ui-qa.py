@@ -37,7 +37,7 @@ with sync_playwright() as p:
     models = [
         dict(id='zhipu-glm',label='智谱 GLM-4.7',provider='智谱 AI',available=True,free=True,vision=False),
         dict(id='zhipu-vision',label='智谱 GLM-4.6V-Flash',provider='智谱 AI',available=True,free=True,vision=True),
-        dict(id='zhipu-air',label='智谱 GLM-4.5-Air',provider='智谱 AI',available=True,free=True,vision=False),
+        dict(id='zhipu-flash',label='智谱 GLM-4.7-Flash',provider='智谱 AI',available=True,free=True,vision=False),
     ]
     page.on('pageerror', lambda error: errors.append(str(error)))
 
@@ -135,6 +135,37 @@ with sync_playwright() as p:
     for title in ['检索对比','侵权识别','合规提示','知产文书','合同起草（审核）']:
         assert main.get_by_role('button',name=title,exact=True).count() == 1
 
+    composer = main.locator('textarea')
+    main.get_by_role('heading', name='你好，我是小知，你的知识产权合规助理').wait_for()
+    sample = main.get_by_role('button', name='产品准备发布，使用开源组件前要核对哪些许可条件？')
+    sample.click()
+    assert composer.input_value() == sample.inner_text()
+    composer.fill('原有草稿')
+    parse_file = lambda route: route.fulfill(json={'name':'研发说明.txt','size':2,'text':'OK','charCount':2,'truncated':False})
+    page.route('**/api/agent/files', parse_file)
+    assert composer.evaluate("""el => {
+        const data = new DataTransfer();
+        data.setData('text/plain','普通粘贴');
+        return el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+    }"""), 'Plain text paste must keep the browser default'
+    for action in ('drop', 'paste'):
+        assert not composer.evaluate("""(el, action) => {
+            const data = new DataTransfer();
+            data.items.add(new File(['OK'],'研发说明.txt',{type:'text/plain'}));
+            const canvas = document.createElement('canvas');
+            const bytes = Uint8Array.from(atob(canvas.toDataURL().split(',')[1]), c => c.charCodeAt(0));
+            data.items.add(new File([bytes],'截图.png',{type:'image/png'}));
+            const init = {bubbles:true,cancelable:true};
+            return el.dispatchEvent(action === 'drop' ? new DragEvent(action,{...init,dataTransfer:data})
+                : new ClipboardEvent(action,{...init,clipboardData:data}));
+        }""", action)
+        main.get_by_role('img', name='截图.png').wait_for()
+        assert composer.input_value() == '原有草稿'
+        for name in ('研发说明.txt','截图.png'):
+            main.get_by_role('button', name='移除 '+name, exact=True).click()
+    page.unroute('**/api/agent/files', parse_file)
+    composer.fill('')
+
     # Retry the catalogue, replace the retired selection, and select another Zhipu model.
     page.get_by_role('button',name='切换模型：选择模型',exact=True).click()
     page.get_by_role('menuitem',name='重新加载').click()
@@ -142,7 +173,7 @@ with sync_playwright() as p:
     page.get_by_role('button',name='切换模型：智谱 GLM-4.7',exact=True).click()
     menu = page.get_by_role('menu')
     assert menu.get_by_role('menuitemradio').count() == len(models)
-    menu.get_by_role('menuitemradio',name='智谱 GLM-4.5-Air',exact=True).click()
+    menu.get_by_role('menuitemradio',name='智谱 GLM-4.7-Flash',exact=True).click()
     page.screenshot(path=str(OUT/'assistant-home-desktop.png'),full_page=True)
 
     main.locator('textarea').fill('模拟咨询')
@@ -155,10 +186,10 @@ with sync_playwright() as p:
 
     def wait_saved(count):
         page.wait_for_function('() => !document.querySelector(\'button[title="停止生成"]\')')
-        page.get_by_role('button',name='切换模型：智谱 GLM-4.5-Air',exact=True).wait_for(state='visible')
-        page.wait_for_function('() => [...document.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === "切换模型：智谱 GLM-4.5-Air" && !b.disabled)')
+        page.get_by_role('button',name='切换模型：智谱 GLM-4.7-Flash',exact=True).wait_for(state='visible')
+        page.wait_for_function('() => [...document.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === "切换模型：智谱 GLM-4.7-Flash" && !b.disabled)')
         assert len(requests) == count
-        assert requests[-1]['model'] == 'zhipu-air'
+        assert requests[-1]['model'] == 'zhipu-flash'
         assert 'skillId' not in requests[-1] and 'skillVersion' not in requests[-1]
         assert any(m.get('content') == 'Mocked answer '+str(count) for row in records.values() if row['kind']=='sessions' for m in row['payload']['messages'])
 
@@ -272,7 +303,7 @@ with sync_playwright() as p:
         page.get_by_role('menuitem', name='自定义模型', exact=True).click()
         return page.get_by_role('dialog', name=re.compile('^(添加模型|编辑模型|自定义模型)$'))
 
-    custom = open_custom('智谱 GLM-4.5-Air')
+    custom = open_custom('智谱 GLM-4.7-Flash')
     supplier = custom.get_by_label('供应商', exact=True)
     assert supplier.locator('option').all_text_contents() == [
         '智谱 AI','DeepSeek','月之暗面','腾讯混元','阿里千问','小米 MiMo','阶跃星辰','自定义供应商']

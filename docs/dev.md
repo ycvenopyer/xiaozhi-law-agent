@@ -38,15 +38,16 @@ package.json / package-lock.json       两个 npm 工作区的命令与依赖版
 
 | 要维护的功能 | 从哪里开始看 |
 | --- | --- |
-| 验证码登录、密码登录与账号设置 | `CloudAccount.tsx`、`LoginSettings.tsx`、`LoginBrand.tsx`、`frontend/src/lib/cloudbase.ts` |
+| 注册、验证码登录、密码登录与账号设置 | `CloudAccount.tsx`、`RegisterDialog.tsx`、`LoginSettings.tsx`、`LoginBrand.tsx`、`frontend/src/lib/cloudbase.ts` |
 | 搜索、查看和保存对话 | `ConversationSearch.tsx` 在浏览器搜索已载入的本账号对话。滚动由 `MessageList.tsx` 管理，保存由 `frontend/src/lib/cloud-store.ts` 管理 |
 | 内置与自定义模型 | 内置型号在 `backend/src/modules/agent/providers.ts`，厂商预设在 `frontend/src/lib/model-presets.ts`，自定义接口转发在 `backend/src/modules/agent/custom-provider.ts` |
+| 首页与普通附件 | `EmptyState.tsx` 提供四类业务示例，`ChatInput.tsx` 接收回形针、拖放和粘贴；`Index.tsx` 按对话维护草稿及上传状态 |
 | 今日知产新闻 | `Workbench.tsx` 调用独立新闻接口，`backend/src/modules/agent/ip-news.ts` 向 Tavily 提交固定的公开检索词，并按北京时间筛选当天结果 |
 | 检索比对、侵权识别、合规提示、知产文书 | `IpWorkflow.tsx` 收集业务事实，`backend/src/modules/agent/workbench-report.ts` 校验结构化报告和条文引用 |
 | 专利 FTO 初筛 | `PatentScreen.tsx` 管理回填步骤，`frontend/src/lib/fto.ts` 解析 CSV、匹配特征与去重，`report-export.ts` 导出报告 |
 | 知识库 | `frontend/src/lib/knowledge.ts` 合并公共条文和个人条目，`law-sources.ts` 从升级文档的 Markdown 清单读取权威链接 |
 
-表中界面组件位于 `frontend/src/components/assistant/`。当前功能清单见 [产品功能](product-features.md)。[法规权威链接清单](项目升级文档/知识产权常用法规库_权威链接清单.md) 是 Vite 的构建输入；更新或移动清单时要核对知识库面板的「权威来源」。
+表中界面组件位于 `frontend/src/components/assistant/`。技术路线和数据集说明见 [详细技术文档](详细技术文档.md)。当前功能清单见 [产品功能](product-features.md)。[法规权威链接清单](项目升级文档/知识产权常用法规库_权威链接清单.md) 是 Vite 的构建输入；更新或移动清单时要核对知识库面板的「权威来源」。
 
 ## 默认模型与自定义端点
 
@@ -89,12 +90,13 @@ package.json / package-lock.json       两个 npm 工作区的命令与依赖版
 | `GET /api/agent/models` | 登录后获取内置模型列表和配置状态 |
 | `POST /api/agent/chat` | 登录及模型外发授权，保存并流式返回模型回答 |
 | `POST /api/agent/files` | 登录后解析 multipart 文件，原件由客户端存入 CloudBase 私有桶 |
+| `POST /api/agent/prefill` | 登录及外发授权，从文字及最多 8 张图片提取所选业务的可编辑字段 |
 | `POST /api/agent/custom-model/test` | 登录后向自定义端点发送固定短消息，测试流式响应 |
 | `POST /api/auth/password` | 按精确用户名登录，CloudBase 核验密码并签发会话 |
 | `POST /api/agent/ip-news` | 登录后提交当前用户的 `{ apiKey }`，由后端向 Tavily 查询当天的公开新闻 |
 | `POST /api/agent/extract-dossier` | 旧客户端兼容接口，仍要求登录和外发授权 |
 
-对话请求须先保存用户消息与回答占位。聊天最多 60 条消息，JSON 请求上限 5 MiB，文件上限 4 MiB，提取文本上限 40,000 字符。PDF 解析读取嵌入文本，扫描件需先 OCR 或作为支持视觉输入的图片提交。Word 请使用 DOCX。EdgeOne 上的聊天生成使用云函数剩余执行时间，预留 15 秒给 CloudBase 保存和 1 秒给完成事件。按当前 120 秒配置，单次可用于生成的时间最多 104 秒，认证和读取记录等耗时会从中扣除。本地运行时单次生成上限为 120 秒。正常完成、取消或超时都会尽力保存已收到的内容。
+对话请求须先保存用户消息与回答占位。聊天最多 60 条消息，JSON 请求上限 5 MiB，文件上限 4 MiB，提取文本上限 40,000 字符。PDF 解析读取嵌入文本，扫描件需先 OCR 或作为支持视觉输入的图片提交。Word 支持 DOCX 和 DOC，分别使用 Mammoth 和 word-extractor 读取正文。EdgeOne 上的聊天生成使用云函数剩余执行时间，预留 15 秒给 CloudBase 保存和 1 秒给完成事件。按当前 120 秒配置，单次可用于生成的时间最多 104 秒，认证和读取记录等耗时会从中扣除。本地运行时单次生成上限为 120 秒。正常完成、取消或超时都会尽力保存已收到的内容。
 
 业务报告在 `/api/agent/chat` 使用可选的 `workflow` 字段，保留认证、外发授权、会话锁和保存流程。服务端流式发送可读草稿并标明尚待核验。长报告或超时请求保存续写位置，用户点击「继续生成」后通过会话版本继续同一条回复，最终报告再核对格式和引文。`npm run test:workbench` 测试法条选择、跨年切换、引文校验和 CSV 初筛。
 
@@ -124,4 +126,6 @@ python scripts/sidebar-ui-qa.py
 python scripts/assistant-ui-qa.py
 ```
 
-三个脚本分别覆盖验证码与密码登录、账号设置、公共知识库与个人新增资料，侧边栏项目和账号隔离，以及对话搜索、事务台和模型配置。它们拦截云端、模型和新闻请求。浏览器截图生成到 `.qa-artifacts/`，生产页面生成到 `frontend/dist/`。根目录的 `.gitignore` 管理本机产物，`.prettierrc` 为两个工作区提供相同的格式化规则。
+账号脚本覆盖未注册邮箱登录被拒、重复邮箱、注册时名称冲突、注册成功后手动登录，以及旧账号修改名称、换绑邮箱和验证码改密。侧栏脚本检查项目和账号隔离，助理脚本检查对话搜索、附件拖放与粘贴、事务台和模型配置。脚本拦截云端、模型和新闻请求。真实邮件投递需在目标 CloudBase 环境使用测试邮箱验证。
+
+浏览器截图生成到 `.qa-artifacts/`，生产页面生成到 `frontend/dist/`。根目录的 `.gitignore` 管理本机产物，`.prettierrc` 为两个工作区提供相同的格式化规则。

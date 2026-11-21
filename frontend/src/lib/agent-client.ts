@@ -5,7 +5,6 @@ import { imageDataUrl, storeOriginal } from './private-files';
 import type { CustomModelRequest } from './custom-models';
 import type { DocumentTool } from '../../../shared/document-tools.mjs';
 
-const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 
 export type WorkbenchMode = 'compare' | 'infringement' | 'compliance' | 'draft';
@@ -154,9 +153,6 @@ async function* readChatSegment(body: string, signal?: AbortSignal,
  * to the next prompt. Returns the parsed file metadata.
  */
 export async function uploadFile(file: File): Promise<AttachedFile> {
-  if (file.size > MAX_FILE_BYTES) {
-    throw new Error('文件超过 4 MiB，请压缩或拆分后重试。');
-  }
   const stored = await storeOriginal(file);
   if (stored.kind === 'image') return stored;
   const form = new FormData();
